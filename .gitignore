@@ -1,0 +1,27 @@
+# Runtime artifacts
+storage/folders/
+storage/**/*.json
+storage/**/*.html
+storage/**/*.txt
+storage/**/*.mp4
+storage/**/*.avi
+storage/**/*.mov
+storage/**/*.mkv
+storage/**/*.webm
+storage/**/*.m4v
+storage/**/warnings_video_frames_tmp/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local INF data (keep README only)
+INF/*.json
+!INF/README.md
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.tmp

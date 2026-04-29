@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WEB samv</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="page">
+    <section class="card tabs">
+      <div class="row">
+        <button type="button" class="tab-btn active" data-tab="main-tab">Работа</button>
+        <button type="button" class="tab-btn" data-tab="inf-tab">INF</button>
+      </div>
+    </section>
+
+    <section id="main-tab" class="tab-pane">
+      <section class="card">
+        <h1>WEB samv</h1>
+        <p class="muted">Только видео + промпт. Папка создается автоматически после обработки. Несколько классов: разделяйте <code>.</code> или <code>,</code> (например: <code>человек . каска</code>) — бэкенд сделает несколько прогонов и объединит JSON. SAM3.1 Multiplex ускоряет много экземпляров <em>одного</em> класса за проход.</p>
+        <div class="row">
+          <input id="api-base-input" type="url" placeholder="http://127.0.0.1:8000" />
+          <button id="api-connect-btn" type="button">Подключить</button>
+          <button id="api-check-btn" type="button">Проверить</button>
+        </div>
+        <p id="api-status" class="muted mono"></p>
+        <form id="process-form" class="grid">
+          <label>Промпт
+            <input id="prompt" type="text" placeholder="например: car" required />
+          </label>
+          <label>Видео
+            <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v" required />
+          </label>
+          <label class="inline">
+            <input id="fast-x2" type="checkbox" />
+            D/2 (даунскейл перед инференсом, затем апскейл масок)
+          </label>
+          <label>Делитель даунскейла (D/N)
+            <input id="scale-div" type="number" min="1" step="0.1" value="1" />
+          </label>
+          <label class="inline">
+            <input id="fps-half" type="checkbox" />
+            FPS/2 (прореживание кадров перед инференсом)
+          </label>
+          <label>Делитель FPS (FPS/N)
+            <input id="fps-div" type="number" min="1" step="1" value="1" />
+          </label>
+          <button id="process-btn" type="submit">Обработать видео</button>
+        </form>
+        <div id="status" class="muted"></div>
+      </section>
+
+      <section class="card">
+        <h2>Папки</h2>
+        <button id="refresh-btn" type="button">Обновить</button>
+        <p id="root-hint" class="muted mono"></p>
+        <div id="list"></div>
+      </section>
+
+      <section class="card">
+        <h2>Анализатор JSON (по маскам)</h2>
+        <p class="muted" id="an-folder">Папка не выбрана</p>
+        <div class="grid">
+          <label>Основной промт
+            <select id="main-prompt"></select>
+          </label>
+          <label>Связанный промт #1
+            <select id="linked-prompt-1"></select>
+          </label>
+          <label>Связанный промт #2
+            <select id="linked-prompt-2"></select>
+          </label>
+        </div>
+        <div class="row">
+          <button id="run-analysis-btn" type="button">Запустить анализ</button>
+          <button id="build-video-btn" type="button" disabled>Сделать видео</button>
+        </div>
+        <div id="analysis-status" class="muted"></div>
+        <div id="video-progress" class="progress hidden" aria-hidden="true">
+          <div class="bar"></div>
+        </div>
+        <div id="warnings-list"></div>
+        <div id="report-status" class="muted"></div>
+        <div id="report-result" class="muted"></div>
+        <div id="warning-video-box" class="hidden">
+          <p class="muted">Видео по warning-кадрам</p>
+          <video id="warning-video" controls preload="metadata"></video>
+        </div>
+      </section>
+    </section>
+
+    <section id="inf-tab" class="tab-pane hidden">
+      <section class="card">
+        <h2>INF: Справочники</h2>
+        <p id="inf-root-hint" class="muted mono"></p>
+        <div class="inf-grid">
+          <article class="inf-col">
+            <h3>Здания</h3>
+            <label>Список
+              <select id="inf-buildings-list"></select>
+            </label>
+            <div class="row">
+              <input id="inf-building-input" type="text" placeholder="Корпус 1" />
+              <button id="inf-building-add" type="button">Добавить</button>
+              <button id="inf-building-del" type="button">Удалить</button>
+            </div>
+          </article>
+          <article class="inf-col">
+            <h3>Подрядчики</h3>
+            <label>Список
+              <select id="inf-contractors-list"></select>
+            </label>
+            <div class="row">
+              <input id="inf-contractor-input" type="text" placeholder="ООО Рога и Копыта" />
+              <button id="inf-contractor-add" type="button">Добавить</button>
+              <button id="inf-contractor-del" type="button">Удалить</button>
+            </div>
+          </article>
+        </div>
+        <div id="inf-status" class="muted"></div>
+      </section>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
