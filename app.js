@@ -152,6 +152,77 @@ function activateTab(tabId) {
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.getAttribute("data-tab") === tabId);
   });
+  if (tabId === "stats-tab") {
+    loadStatsTable();
+  }
+}
+
+function fmtNum(v, digits = 2) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  return digits <= 0 ? String(Math.round(n)) : n.toFixed(digits);
+}
+
+function renderStatsTable(items) {
+  const box = document.getElementById("stats-table-box");
+  if (!box) return;
+  const arr = Array.isArray(items) ? items : [];
+  if (!arr.length) {
+    box.innerHTML = "<p class='muted'>Нет обработанных видео с data.json.</p>";
+    return;
+  }
+  const rows = arr.map((s) => {
+    const srcWh = `${Number(s?.source_width || 0)}x${Number(s?.source_height || 0)}`;
+    const procWh = `${Number(s?.processed_width || 0)}x${Number(s?.processed_height || 0)}`;
+    const fpsPair = `${fmtNum(s?.source_fps || 0, 2)} -> ${fmtNum(s?.processed_fps || 0, 2)}`;
+    const folder = String(s?.folder || "");
+    const isSelected = selectedFolder && folder === selectedFolder;
+    return `<tr${isSelected ? " class=\"stats-row-selected\"" : ""}>
+      <td>${esc(folder || "-")}</td>
+      <td>${esc(String(s?.video_name || "-"))}</td>
+      <td>${esc(`D/${fmtNum(s?.scale_div || 1, 2)} | FPS/${fmtNum(s?.fps_div || 1, 0)}`)}</td>
+      <td>${esc(`${srcWh} -> ${procWh}`)}</td>
+      <td>${esc(fpsPair)}</td>
+      <td>${esc(fmtNum(s?.frames_total || 0, 0))}</td>
+      <td>${esc(fmtNum(s?.frames_with_instances || 0, 0))}</td>
+      <td>${esc(fmtNum(s?.instances_total || 0, 0))}</td>
+      <td>${esc(fmtNum(s?.labels_count || 0, 0))}</td>
+      <td>${esc(fmtNum(s?.elapsed_sec || 0, 2))}</td>
+    </tr>`;
+  }).join("");
+  box.innerHTML = `<table class="stats-table">
+    <thead>
+      <tr>
+        <th>Папка</th>
+        <th>Видео</th>
+        <th>Downscale/FPS</th>
+        <th>Размер (src -> proc)</th>
+        <th>FPS (src -> proc)</th>
+        <th>Кадры</th>
+        <th>Кадры с инстансами</th>
+        <th>Инстансы</th>
+        <th>Метки</th>
+        <th>Время, сек</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+async function loadStatsTable() {
+  const hint = document.getElementById("stats-folder-hint");
+  const st = document.getElementById("stats-status");
+  const box = document.getElementById("stats-table-box");
+  if (hint) hint.textContent = selectedFolder ? `Выбрана папка: ${selectedFolder}` : "Папка не выбрана";
+  if (st) st.textContent = "Загрузка статистики...";
+  const out = await apiGet("/api/folders/stats_all");
+  if (!out.ok) {
+    if (st) st.textContent = `Ошибка статистики: ${out.error || "unknown"}`;
+    if (box) box.innerHTML = "";
+    return;
+  }
+  renderStatsTable(out.items || []);
+  if (st) st.textContent = "Статистика обновлена.";
 }
 
 function renderWarnings(items) {
@@ -403,6 +474,7 @@ async function refreshList() {
       setReportEnabled();
       resetWarningVideo();
       await loadPromptsForFolder(selectedFolder);
+      await loadStatsTable();
     });
   });
   const names = items.map((x) => String(x.name || "")).filter(Boolean);
@@ -413,6 +485,7 @@ async function refreshList() {
     setReportEnabled();
     resetWarningVideo();
     await loadPromptsForFolder(selectedFolder);
+    await loadStatsTable();
   }
 }
 
@@ -668,6 +741,7 @@ document.getElementById("inf-contractor-add").addEventListener("click", () => ad
 document.getElementById("inf-contractor-del").addEventListener("click", () => delInf("contractors", "inf-contractors-list"));
 
 document.getElementById("refresh-btn").addEventListener("click", refreshList);
+document.getElementById("stats-refresh-btn")?.addEventListener("click", loadStatsTable);
 document.getElementById("api-connect-btn").addEventListener("click", connectApiBase);
 document.getElementById("api-check-btn").addEventListener("click", refreshApiStatus);
 document.getElementById("fast-x2")?.addEventListener("change", (e) => {

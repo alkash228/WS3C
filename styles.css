@@ -217,6 +217,38 @@ button {
   background: #131923;
 }
 
+.stats-box {
+  margin-top: 10px;
+  overflow-x: auto;
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #111723;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+}
+
+.stats-table th,
+.stats-table td {
+  border-bottom: 1px solid #2a3040;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.stats-table th {
+  width: auto;
+  color: #b9c9ec;
+  background: #141d2c;
+  white-space: nowrap;
+}
+
+.stats-row-selected td {
+  background: #1b2740;
+}
+
 a {
   color: #9bc2ff;
 }

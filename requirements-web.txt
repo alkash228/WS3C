@@ -1,2 +1,5 @@
 numpy>=1.24
 opencv-python>=4.8
+
+# Note: ffmpeg/ffprobe are required system binaries (not pip packages).
+# Install FFmpeg separately and ensure it is available in PATH.

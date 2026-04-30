@@ -423,13 +423,48 @@ def _label_slug(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(label or "").strip().lower()).strip("_")
 
 
+def _label_segments(raw: str) -> list[str]:
+    s = str(raw or "").strip()
+    if not s:
+        return []
+    parts = [str(x or "").strip() for x in re.split(r"[,\n;]+|\s\.\s|\.", s) if str(x or "").strip()]
+    if not parts:
+        return [s]
+    # Keep order but remove duplicates.
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        k = p.casefold()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(p)
+    return out
+
+
+def _label_matches(instance_label: str, wanted_label: str) -> bool:
+    il = str(instance_label or "").strip()
+    wl = str(wanted_label or "").strip()
+    if not il or not wl:
+        return False
+    if il == wl:
+        return True
+    # Compatibility: some JSONs store one combined label like
+    # "human, person head, helmet". Treat it as multiple segments.
+    wanted_cf = wl.casefold()
+    for seg in _label_segments(il):
+        if seg.casefold() == wanted_cf:
+            return True
+    return False
+
+
 def _instance_group_by_label(instances: list[dict], label: str, h: int, w: int) -> list[tuple[int, np.ndarray]]:
     out: list[tuple[int, np.ndarray]] = []
     slug = _label_slug(label)
     key = f"{slug}_id" if slug else ""
     for x in instances:
         lbl = str(x.get("prompt_label", "") or "").strip()
-        if lbl != label:
+        if not _label_matches(lbl, label):
             continue
         m = _mask_from_rle_row_major(x.get("mask", {}), h, w)
         if m is None or not m.any():
@@ -727,6 +762,75 @@ def _list_folders() -> list[dict[str, object]]:
     return rows
 
 
+def _processing_stats_for_folder(folder_name: str) -> dict[str, object]:
+    _folder_path, payload, video_path = _load_folder_payload(folder_name)
+    frames = payload.get("frames")
+    frames_list = frames if isinstance(frames, list) else []
+    frames_total = int(len(frames_list))
+    frames_with_instances = 0
+    instances_total = 0
+    labels: set[str] = set()
+    for fr in frames_list:
+        if not isinstance(fr, dict):
+            continue
+        inst = fr.get("instances")
+        if not isinstance(inst, list):
+            continue
+        valid = [x for x in inst if isinstance(x, dict)]
+        if valid:
+            frames_with_instances += 1
+        instances_total += int(len(valid))
+        for x in valid:
+            lbl = str(x.get("prompt_label", "") or "").strip()
+            if lbl:
+                labels.add(lbl)
+
+    proc = payload.get("web_samv_processing")
+    proc_map = proc if isinstance(proc, dict) else {}
+    scale_div = float(proc_map.get("scale_div", payload.get("fast_scale_div", 1.0)) or 1.0)
+    fps_div = int(proc_map.get("fps_div", payload.get("fps_div", 1)) or 1)
+    source_fps = float(proc_map.get("source_fps", payload.get("fps", 0.0)) or 0.0)
+    processed_fps = float(proc_map.get("processed_fps", payload.get("fps", 0.0)) or 0.0)
+    source_w = int(proc_map.get("source_width", payload.get("width", 0)) or 0)
+    source_h = int(proc_map.get("source_height", payload.get("height", 0)) or 0)
+    processed_w = int(proc_map.get("processed_width", payload.get("width", 0)) or 0)
+    processed_h = int(proc_map.get("processed_height", payload.get("height", 0)) or 0)
+
+    return {
+        "folder": folder_name,
+        "video_name": video_path.name if video_path and video_path.is_file() else "",
+        "prompt": str(payload.get("prompt", "") or ""),
+        "scale_div": float(scale_div),
+        "fps_div": int(fps_div),
+        "source_fps": float(source_fps),
+        "processed_fps": float(processed_fps),
+        "source_width": int(source_w),
+        "source_height": int(source_h),
+        "processed_width": int(processed_w),
+        "processed_height": int(processed_h),
+        "frames_written": int(payload.get("frames_written", 0) or 0),
+        "frames_total": int(frames_total),
+        "frames_with_instances": int(frames_with_instances),
+        "instances_total": int(instances_total),
+        "labels_count": int(len(labels)),
+        "labels": sorted(labels),
+        "elapsed_sec": float(payload.get("elapsed_sec", 0.0) or 0.0),
+    }
+
+
+def _processing_stats_all_folders() -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for item in _list_folders():
+        name = str(item.get("name", "") or "")
+        if not name:
+            continue
+        try:
+            rows.append(_processing_stats_for_folder(name))
+        except Exception:
+            continue
+    return rows
+
+
 def _new_folder_name() -> str:
     return dt.datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
@@ -994,6 +1098,7 @@ def _save_processed_outputs(
     result: dict,
     fallback_video: bytes,
     upscale_to_wh: tuple[int, int] | None = None,
+    processing_meta: dict[str, object] | None = None,
 ) -> None:
     folder, json_path, _ = _folder_paths(folder_name)
     folder.mkdir(parents=True, exist_ok=True)
@@ -1024,6 +1129,10 @@ def _save_processed_outputs(
             parsed = json.loads(raw_json.decode("utf-8"))
             if isinstance(parsed, dict) and upscale_to_wh is not None:
                 _upscale_result_payload_inplace(parsed, int(upscale_to_wh[0]), int(upscale_to_wh[1]))
+            if isinstance(parsed, dict) and isinstance(processing_meta, dict):
+                parsed["web_samv_processing"] = dict(processing_meta)
+                parsed["fast_scale_div"] = float(processing_meta.get("scale_div", 1.0) or 1.0)
+                parsed["fps_div"] = int(processing_meta.get("fps_div", 1) or 1)
             json_path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             json_path.write_bytes(raw_json)
@@ -1107,6 +1216,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if path == "/api/analyzer/result":
             self._analyzer_result(parsed)
+            return
+        if path == "/api/folders/stats":
+            self._folder_stats(parsed)
+            return
+        if path == "/api/folders/stats_all":
+            self._folders_stats_all()
             return
         if path == "/api/inf/options":
             self._inf_options()
@@ -1369,6 +1484,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as exc:
                 _json_response(self, {"ok": False, "error": f"FAST preprocessing failed: {exc}"}, code=500)
                 return
+        send_meta = _video_meta_from_bytes(send_video_bytes, suffix=".mp4")
 
         folder_name = _new_folder_name()
         for _ in range(20):
@@ -1386,6 +1502,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 result,
                 fallback_video=video_bytes,
                 upscale_to_wh=original_wh if scale_div > 1.0 else None,
+                processing_meta={
+                    "scale_div": float(scale_div),
+                    "fps_div": int(fps_div),
+                    "source_fps": float(original_fps),
+                    "processed_fps": float(send_meta[2]) if send_meta is not None else float(original_fps),
+                    "source_width": int(original_wh[0]) if original_wh is not None else 0,
+                    "source_height": int(original_wh[1]) if original_wh is not None else 0,
+                    "processed_width": int(send_meta[0]) if send_meta is not None else int(original_wh[0]) if original_wh is not None else 0,
+                    "processed_height": int(send_meta[1]) if send_meta is not None else int(original_wh[1]) if original_wh is not None else 0,
+                },
             )
         except Exception as exc:
             _json_response(self, {"ok": False, "error": f"Process failed: {exc}"}, code=500)
@@ -1494,6 +1620,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if preview_path.is_file():
             preview_url = f"/storage/folders/{folder}/analysis/warnings_preview.mp4?ts={int(time.time())}"
         _json_response(self, {"ok": True, "exists": True, "folder": folder, "preview_video_url": preview_url, **data})
+
+    def _folder_stats(self, parsed) -> None:
+        qs = parse_qs(parsed.query or "")
+        folder = _safe_name((qs.get("folder") or [""])[0])
+        if not folder:
+            _json_response(self, {"ok": False, "error": "Need folder"}, code=400)
+            return
+        try:
+            stats = _processing_stats_for_folder(folder)
+        except Exception as exc:
+            _json_response(self, {"ok": False, "error": str(exc)}, code=400)
+            return
+        _json_response(self, {"ok": True, **stats})
+
+    def _folders_stats_all(self) -> None:
+        try:
+            rows = _processing_stats_all_folders()
+        except Exception as exc:
+            _json_response(self, {"ok": False, "error": str(exc)}, code=500)
+            return
+        _json_response(self, {"ok": True, "items": rows})
 
     def _analyzer_run(self) -> None:
         data = self._read_json_body()

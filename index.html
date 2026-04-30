@@ -11,6 +11,7 @@
     <section class="card tabs">
       <div class="row">
         <button type="button" class="tab-btn active" data-tab="main-tab">Работа</button>
+        <button type="button" class="tab-btn" data-tab="stats-tab">Статистика</button>
         <button type="button" class="tab-btn" data-tab="inf-tab">INF</button>
       </div>
     </section>
@@ -87,6 +88,18 @@
           <p class="muted">Видео по warning-кадрам</p>
           <video id="warning-video" controls preload="metadata"></video>
         </div>
+      </section>
+    </section>
+
+    <section id="stats-tab" class="tab-pane hidden">
+      <section class="card">
+        <h2>Статистика обработки</h2>
+        <p id="stats-folder-hint" class="muted">Папка не выбрана</p>
+        <div class="row">
+          <button id="stats-refresh-btn" type="button">Обновить статистику</button>
+        </div>
+        <div id="stats-status" class="muted"></div>
+        <div id="stats-table-box" class="stats-box"></div>
       </section>
     </section>
 
