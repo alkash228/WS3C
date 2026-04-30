@@ -28,7 +28,8 @@ import numpy as np
 PORT = int(os.environ.get("WEB_SAMV_PORT", "8090"))
 MAX_PORT_TRIES = int(os.environ.get("WEB_SAMV_PORT_TRIES", "32"))
 API_PORT_HINT = int(os.environ.get("WEB_SAMV_API_PORT", "8000"))
-API_BASE = os.environ.get("WEB_SAMV_API_BASE", f"http://127.0.0.1:{API_PORT_HINT}").strip().rstrip("/")
+API_HOST_HINT = os.environ.get("WEB_SAMV_API_HOST", "localhost").strip() or "localhost"
+API_BASE = os.environ.get("WEB_SAMV_API_BASE", "").strip().rstrip("/")
 JOB_TIMEOUT_SEC = int(os.environ.get("WEB_SAMV_JOB_TIMEOUT_SEC", "3600"))
 POLL_INTERVAL_SEC = float(os.environ.get("WEB_SAMV_POLL_INTERVAL_SEC", "1.2"))
 AN_MIN_INTERSECTION_PX = int(os.environ.get("WEB_SAMV_ANALYZER_MIN_INTERSECTION_PX", "80"))
@@ -835,8 +836,16 @@ def _new_folder_name() -> str:
     return dt.datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
 
+def _effective_api_base() -> str:
+    base = str(API_BASE or "").strip().rstrip("/")
+    if base:
+        return base
+    # Auto mode without fixed IP: use configurable host hint (localhost by default).
+    return f"http://{API_HOST_HINT}:{API_PORT_HINT}"
+
+
 def _join_api(path: str) -> str:
-    return urljoin(API_BASE + "/", path.lstrip("/"))
+    return urljoin(_effective_api_base() + "/", path.lstrip("/"))
 
 
 def _http_json_get(path: str) -> dict:
@@ -854,19 +863,22 @@ def _http_bytes_get(path: str) -> bytes:
 
 
 def _api_health_status() -> dict[str, object]:
+    base = _effective_api_base()
     try:
         j = _http_json_get("/health")
         ok = str(j.get("status", "")).lower() == "ok"
-        return {"ok": ok, "api_base": API_BASE, "raw": j}
+        return {"ok": ok, "api_base": base, "raw": j}
     except Exception as exc:
-        return {"ok": False, "api_base": API_BASE, "error": str(exc)}
+        return {"ok": False, "api_base": base, "error": str(exc)}
 
 
 def _set_api_base(new_base: str) -> None:
     global API_BASE
     base = str(new_base or "").strip().rstrip("/")
     if not base:
-        raise ValueError("Empty api_base")
+        # Empty value resets to auto mode (WEB_SAMV_API_HOST + WEB_SAMV_API_PORT).
+        API_BASE = ""
+        return
     if not (base.startswith("http://") or base.startswith("https://")):
         raise ValueError("api_base must start with http:// or https://")
     API_BASE = base
@@ -1539,7 +1551,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as exc:
             _json_response(self, {"ok": False, "error": f"Invalid api_base: {exc}"}, code=400)
             return
-        _json_response(self, {"ok": True, "api_base": API_BASE})
+        _json_response(self, {"ok": True, "api_base": _effective_api_base()})
 
     def _inf_options(self) -> None:
         opts = _inf_options()
