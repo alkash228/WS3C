@@ -23,27 +23,212 @@ function esc(s) {
 
 let selectedFolder = "";
 let lastWarnings = [];
-let infOptions = { buildings: [], contractors: [] };
+let infOptions = { buildings: [], contractors: [], contracts: [] };
 let currentMiddleWarning = null;
 let middleWarningByHumanId = {};
+let warningsByHumanId = {};
+let analysisPrompts = { main: "", linked: [] };
+let detectedViolationsByHumanId = {};
 
 function setBuildVideoEnabled(enabled) {
   const btn = document.getElementById("build-video-btn");
   if (btn) btn.disabled = !enabled;
 }
 
+function humanContractValue(row) {
+  return String(
+    row.querySelector(".human-contract")?.value
+    || row.querySelector(".human-contract-text")?.value
+    || "",
+  ).trim();
+}
+
+function humanBlockById(hid) {
+  const id = String(hid || "").trim();
+  if (!id) return null;
+  const q = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id;
+  return document.querySelector(`.human-block[data-human-id="${q}"]`);
+}
+
+function contractFieldMarkup() {
+  if ((infOptions.contracts || []).length) {
+    return `<label>Договор подряда
+                <select class="human-contract"></select>
+              </label>`;
+  }
+  return `<label class="full">Договор подряда
+                <input class="human-contract-text" type="text" placeholder="Введите договор подряда" />
+              </label>
+              <p class="muted small full">Справочник договоров пуст или сервер устарел — перезапустите <code>serve.py</code> и добавьте договор во вкладке INF.</p>`;
+}
+
+function getCurrentPrompts() {
+  const main = String(document.getElementById("main-prompt")?.value || "").trim();
+  const p1 = String(document.getElementById("linked-prompt-1")?.value || "").trim();
+  const p2 = String(document.getElementById("linked-prompt-2")?.value || "").trim();
+  const linked = [];
+  if (p1 && p1 !== main) linked.push(p1);
+  if (p2 && p2 !== main && p2 !== p1) linked.push(p2);
+  return { main, linked };
+}
+
+
+function violKey(text) {
+  return encodeURIComponent(String(text || "").trim());
+}
+
+function formatDefectLabel(text, hid) {
+  let s = String(text || "").trim();
+  const escHid = String(hid || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  s = s.replace(new RegExp(`^human_id\\s*:\\s*${escHid}\\s*->\\s*`, "i"), "").trim();
+  const miss = s.match(/нет\s+(.+?)\s+на кадре/i);
+  if (miss) return `Отсутствует «${miss[1]}» на кадре`;
+  const lap = s.match(/^(.+?)\s+и\s+(.+?)\s+не пересекаются/i);
+  if (lap) return `«${lap[1]}» и «${lap[2]}» не пересекаются`;
+  const lap1 = s.match(/^(.+?)\s+не пересекается с основным/i);
+  if (lap1) return `«${lap1[1]}» не пересекается с основным объектом`;
+  return s || text;
+}
+
+function uniqueDetectedViolations(warnings, hid) {
+  const map = new Map();
+  (Array.isArray(warnings) ? warnings : []).forEach((w) => {
+    const list = Array.isArray(w?.reasons) ? w.reasons : [];
+    list.forEach((r) => {
+      const text = String(r || "").trim();
+      if (!text) return;
+      if (!map.has(text)) {
+        map.set(text, {
+          text,
+          key: violKey(text),
+          label: formatDefectLabel(text, hid),
+          count: 0,
+          sample: w,
+        });
+      }
+      map.get(text).count += 1;
+    });
+  });
+  return Array.from(map.values());
+}
+
+function violationsSummaryForHuman(hid) {
+  const list = detectedViolationsByHumanId[hid] || [];
+  if (list.length) return list.map((v) => v.label || v.text).join("\n");
+  const seen = new Set();
+  const lines = [];
+  (warningsByHumanId[hid] || []).forEach((w) => {
+    (Array.isArray(w?.reasons) ? w.reasons : []).forEach((r) => {
+      const s = String(r || "").trim();
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        lines.push(formatDefectLabel(s, hid));
+      }
+    });
+  });
+  return lines.join("\n");
+}
+
+function reasonsForHuman(hid) {
+  const list = detectedViolationsByHumanId[hid] || [];
+  if (list.length) return list.map((v) => v.text);
+  const seen = new Set();
+  const out = [];
+  (warningsByHumanId[hid] || []).forEach((w) => {
+    (Array.isArray(w?.reasons) ? w.reasons : []).forEach((r) => {
+      const s = String(r || "").trim();
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        out.push(s);
+      }
+    });
+  });
+  return out;
+}
+
+function reportImageForHuman(hid) {
+  const mid = middleWarningByHumanId[hid];
+  if (mid?.image_url) return String(mid.image_url);
+  const list = detectedViolationsByHumanId[hid] || [];
+  return String(list[0]?.sample?.image_url || "");
+}
+
+function updateReportSelectionSummary() {
+  const el = document.getElementById("report-selection-summary");
+  if (!el) return;
+  const total = document.querySelectorAll(".human-report-include").length;
+  const picked = Array.from(document.querySelectorAll(".human-report-include:checked"))
+    .map((cb) => String(cb.getAttribute("data-human-id") || "").trim())
+    .filter(Boolean);
+  if (!total) {
+    el.textContent = "После анализа отметьте, кого включить в отчёт.";
+    return;
+  }
+  el.textContent = picked.length
+    ? `В отчёт: ${picked.map((id) => `human_id:${id}`).join(", ")}`
+    : "Отметьте галочкой хотя бы одного human_id.";
+}
+
+function bindHumanReportPickers() {
+  document.querySelectorAll(".human-report-include").forEach((cb) => {
+    if (cb.dataset.bound) return;
+    cb.dataset.bound = "1";
+    cb.addEventListener("change", () => {
+      setReportEnabled();
+      updateReportPanel();
+      updateReportSelectionSummary();
+    });
+  });
+  document.querySelectorAll(".human-building, .human-contractor, .human-contract, .human-contract-text, .human-deadline, .human-resolved").forEach((el) => {
+    if (el.dataset.boundViol) return;
+    el.dataset.boundViol = "1";
+    el.addEventListener("change", setReportEnabled);
+    el.addEventListener("input", setReportEnabled);
+  });
+}
+
+function updateReportPanel() {
+  const panel = document.getElementById("report-panel");
+  const blocks = document.querySelectorAll(".human-block");
+  const hasChecked = document.querySelectorAll(".human-report-include:checked").length > 0;
+  if (panel) panel.classList.toggle("hidden", !(selectedFolder && blocks.length));
+  if (panel && blocks.length && !hasChecked) panel.classList.remove("hidden");
+  setReportEnabled();
+}
+
+function getSelectedReportFormats() {
+  const out = [];
+  ["report-fmt-docx", "report-fmt-html", "report-fmt-json", "report-fmt-txt"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el?.checked) out.push(String(el.value || ""));
+  });
+  return out.filter(Boolean);
+}
+
 function setReportEnabled() {
   const btn = document.getElementById("gen-inline-report-btn");
   if (!btn) return;
-  const rows = Array.from(document.querySelectorAll(".human-row"));
-  if (!selectedFolder || !rows.length) {
+  const formats = getSelectedReportFormats();
+  const checked = document.querySelectorAll(".human-report-include:checked");
+  if (!selectedFolder || !checked.length || !formats.length) {
     btn.disabled = true;
     return;
   }
-  const ok = rows.every((row) => {
-    const b = String(row.querySelector(".human-building")?.value || "").trim();
-    const c = String(row.querySelector(".human-contractor")?.value || "").trim();
-    return !!(b && c);
+  let ok = true;
+  const blocksDone = new Set();
+  checked.forEach((cb) => {
+    const hid = String(cb.getAttribute("data-human-id") || "").trim();
+    const block = humanBlockById(hid);
+    if (!block) {
+      ok = false;
+      return;
+    }
+    if (blocksDone.has(hid)) return;
+    blocksDone.add(hid);
+    const b = String(block.querySelector(".human-building")?.value || "").trim();
+    const c = String(block.querySelector(".human-contractor")?.value || "").trim();
+    const k = humanContractValue(block);
+    if (!b || !c || !k) ok = false;
   });
   btn.disabled = !ok;
 }
@@ -124,9 +309,10 @@ function extractHumanIdsFromWarning(warn) {
 }
 
 function fillRowSelects() {
-  document.querySelectorAll(".human-row").forEach((row) => {
+  document.querySelectorAll(".human-block, .human-row").forEach((row) => {
     const bSel = row.querySelector(".human-building");
     const cSel = row.querySelector(".human-contractor");
+    const kSel = row.querySelector(".human-contract");
     if (bSel) {
       const prev = String(bSel.value || "");
       setSelectOptions(bSel, infOptions.buildings || [], true);
@@ -140,6 +326,28 @@ function fillRowSelects() {
       if (!cSel.value && infOptions.contractors?.length) cSel.value = infOptions.contractors[0];
       if (prev && Array.isArray(infOptions.contractors) && infOptions.contractors.includes(prev)) cSel.value = prev;
       cSel.addEventListener("change", setReportEnabled);
+    }
+    if (kSel) {
+      const prev = String(kSel.value || "");
+      setSelectOptions(kSel, infOptions.contracts || [], true);
+      if (!kSel.value && infOptions.contracts?.length) kSel.value = infOptions.contracts[0];
+      if (prev && Array.isArray(infOptions.contracts) && infOptions.contracts.includes(prev)) kSel.value = prev;
+      kSel.addEventListener("change", setReportEnabled);
+    }
+    const kTxt = row.querySelector(".human-contract-text");
+    if (kTxt && !kTxt.dataset.bound) {
+      kTxt.dataset.bound = "1";
+      kTxt.addEventListener("input", setReportEnabled);
+    }
+    const dl = row.querySelector(".human-deadline");
+    const rs = row.querySelector(".human-resolved");
+    if (dl && !dl.dataset.bound) {
+      dl.dataset.bound = "1";
+      dl.addEventListener("change", setReportEnabled);
+    }
+    if (rs && !rs.dataset.bound) {
+      rs.dataset.bound = "1";
+      rs.addEventListener("change", setReportEnabled);
     }
   });
   setReportEnabled();
@@ -232,6 +440,8 @@ function renderWarnings(items) {
   lastWarnings = Array.isArray(items) ? items : [];
   currentMiddleWarning = null;
   middleWarningByHumanId = {};
+  warningsByHumanId = {};
+  detectedViolationsByHumanId = {};
   if (repStatus) repStatus.textContent = "";
   if (repResult) repResult.innerHTML = "";
   setBuildVideoEnabled(lastWarnings.length > 0 && !!selectedFolder);
@@ -239,40 +449,64 @@ function renderWarnings(items) {
   resetWarningVideo();
   if (!Array.isArray(items) || !items.length) {
     box.innerHTML = "<p class='muted'>WARNING не найдено.</p>";
+    updateReportSelectionSummary();
+    updateReportPanel();
     return;
   }
   const grouped = groupWarningsByMainId(items);
   const ids = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
   ids.forEach((hid) => {
     const arr = grouped[hid] || [];
+    warningsByHumanId[hid] = arr;
     middleWarningByHumanId[hid] = arr[Math.floor(arr.length / 2)] || null;
   });
   currentMiddleWarning = middleWarningByHumanId[ids[0]] || null;
+  detectedViolationsByHumanId = {};
+  ids.forEach((hid) => {
+    detectedViolationsByHumanId[hid] = uniqueDetectedViolations(grouped[hid] || [], hid);
+  });
   const blocks = ids.map((hid) => {
     const arr = grouped[hid] || [];
     const mid = middleWarningByHumanId[hid] || {};
+    const detected = detectedViolationsByHumanId[hid] || [];
+    const preview = (detected[0]?.sample || mid);
     return `
       <article class="warn-item warn-layout">
         <div>
-          <img src="${esc(mid.image_url || "")}" alt="warning frame" />
+          <img class="warn-preview-img" src="${esc(preview.image_url || "")}" alt="preview" />
           <div class="row">
             <button type="button" class="build-one-video-btn" data-human-id="${esc(hid)}">Сделать видео human_id:${esc(hid)}</button>
           </div>
           <video class="warning-video-one hidden" data-human-id="${esc(hid)}" controls preload="metadata"></video>
         </div>
         <div class="warn-side">
-          <strong>human_id:${esc(hid)} | кадр ${Number(mid.frame || 0)}</strong>
-          <div class="muted">WARNING для этого human_id: ${arr.length}</div>
-          <div class="muted">${esc((mid.reasons || []).join(" | "))}</div>
-          <div class="inline-report">
-            <h3>Назначение для human_id:${esc(hid)}</h3>
-            <div class="human-row" data-human-id="${esc(hid)}">
-              <strong>human_id:${esc(hid)}</strong>
+          <div class="warn-head-row">
+            <strong>human_id:${esc(hid)}</strong>
+            <label class="human-report-toggle">
+              <input type="checkbox" class="human-report-include" data-human-id="${esc(hid)}" />
+              Включить в отчёт
+            </label>
+          </div>
+          <div class="muted">Всего WARNING: ${arr.length}</div>
+          <div class="inline-report human-block" data-human-id="${esc(hid)}">
+            <h3>Данные для отчёта</h3>
+            <div class="human-row">
               <label>Здание
                 <select class="human-building"></select>
               </label>
               <label>Подрядчик
                 <select class="human-contractor"></select>
+              </label>
+              ${contractFieldMarkup()}
+              <label>Срок устранения
+                <input class="human-deadline" type="date" />
+              </label>
+              <label>Отметка об устранении
+                <select class="human-resolved">
+                  <option value="">— не указано —</option>
+                  <option value="Не устранено">Не устранено</option>
+                  <option value="Устранено">Устранено</option>
+                </select>
               </label>
             </div>
           </div>
@@ -280,24 +514,24 @@ function renderWarnings(items) {
       </article>
     `;
   }).join("");
+  const mainLbl = esc(analysisPrompts.main || getCurrentPrompts().main || "—");
   box.innerHTML = `
-    <p class="muted">Раздельно по каждому human_id. Всего WARNING: ${items.length}</p>
+    <p class="muted">Основной промт: <strong>${mainLbl}</strong>. Всего WARNING: ${items.length}</p>
     ${blocks}
-    <div class="row">
-      <button id="gen-inline-report-btn" type="button">Сформировать общий отчет</button>
-    </div>
   `;
   fillRowSelects();
+  bindHumanReportPickers();
   box.querySelectorAll(".build-one-video-btn").forEach((btn) => {
     btn.addEventListener("click", () => buildVideoForOneHuman(String(btn.getAttribute("data-human-id") || "")));
   });
-  document.getElementById("gen-inline-report-btn")?.addEventListener("click", generateInlineReport);
-  setReportEnabled();
+  updateReportSelectionSummary();
+  updateReportPanel();
 }
 
 function fillInfSelects() {
   setSelectOptions(document.getElementById("inf-buildings-list"), infOptions.buildings || [], false);
   setSelectOptions(document.getElementById("inf-contractors-list"), infOptions.contractors || [], false);
+  setSelectOptions(document.getElementById("inf-contracts-list"), infOptions.contracts || [], false);
   fillRowSelects();
   setReportEnabled();
 }
@@ -313,9 +547,17 @@ async function loadInfOptions() {
   infOptions = {
     buildings: Array.isArray(out.buildings) ? out.buildings.map((x) => String(x || "")).filter(Boolean) : [],
     contractors: Array.isArray(out.contractors) ? out.contractors.map((x) => String(x || "")).filter(Boolean) : [],
+    contracts: Array.isArray(out.contracts) ? out.contracts.map((x) => String(x || "")).filter(Boolean) : [],
   };
   if (hint) hint.textContent = `INF: ${out.root || "-"}`;
-  if (st) st.textContent = `Загружено: зданий ${infOptions.buildings.length}, подрядчиков ${infOptions.contractors.length}`;
+  const oldServer = Number(out.inf_version || 0) < 2 || !Object.prototype.hasOwnProperty.call(out, "contracts");
+  if (st) {
+    let msg = `Загружено: зданий ${infOptions.buildings.length}, подрядчиков ${infOptions.contractors.length}, договоров ${infOptions.contracts.length}`;
+    if (oldServer) {
+      msg += " | Перезапустите serve.py (нужна поддержка договоров подряда).";
+    }
+    st.textContent = msg;
+  }
   fillInfSelects();
 }
 
@@ -327,12 +569,22 @@ async function addInf(kind, inputId) {
     if (st) st.textContent = "Введите значение для добавления.";
     return;
   }
-  const out = await apiPost("/api/inf/add", { kind, value });
+  const apiKind = kind === "contracts" ? "contracts" : kind;
+  const out = await apiPost("/api/inf/add", { kind: apiKind, value });
   if (!out.ok) {
-    if (st) st.textContent = `Ошибка INF: ${out.error || "unknown"}`;
+    const err = String(out.error || "unknown");
+    if (st) {
+      st.textContent = err.includes("buildings") && err.includes("contractors") && !err.includes("contracts")
+        ? `Ошибка INF: ${err}. Перезапустите serve.py и обновите страницу (Ctrl+F5).`
+        : `Ошибка INF: ${err}`;
+    }
     return;
   }
-  infOptions = { buildings: out.buildings || [], contractors: out.contractors || [] };
+  infOptions = {
+    buildings: out.buildings || [],
+    contractors: out.contractors || [],
+    contracts: out.contracts || [],
+  };
   if (inp) inp.value = "";
   fillInfSelects();
   if (st) st.textContent = "Добавлено.";
@@ -348,10 +600,19 @@ async function delInf(kind, selectId) {
   }
   const out = await apiPost("/api/inf/delete", { kind, value });
   if (!out.ok) {
-    if (st) st.textContent = `Ошибка INF: ${out.error || "unknown"}`;
+    const err = String(out.error || "unknown");
+    if (st) {
+      st.textContent = err.includes("buildings") && err.includes("contractors") && !err.includes("contracts")
+        ? `Ошибка INF: ${err}. Перезапустите serve.py и обновите страницу (Ctrl+F5).`
+        : `Ошибка INF: ${err}`;
+    }
     return;
   }
-  infOptions = { buildings: out.buildings || [], contractors: out.contractors || [] };
+  infOptions = {
+    buildings: out.buildings || [],
+    contractors: out.contractors || [],
+    contracts: out.contracts || [],
+  };
   fillInfSelects();
   if (st) st.textContent = "Удалено.";
 }
@@ -409,6 +670,10 @@ async function loadSavedAnalysis(folder) {
       return;
     }
     const warnings = Array.isArray(out.warnings) ? out.warnings : [];
+    analysisPrompts = {
+      main: String(out.main_prompt || "").trim(),
+      linked: Array.isArray(out.linked_prompts) ? out.linked_prompts.map((x) => String(x || "").trim()).filter(Boolean) : [],
+    };
     renderWarnings(warnings);
     status.textContent = `Загружен сохраненный анализ. Проверено: ${Number(out.frames_checked || 0)}, WARNING: ${Number(out.warnings_count || 0)}`;
     if (out.preview_video_url) showWarningVideo(out.preview_video_url);
@@ -608,6 +873,10 @@ document.getElementById("run-analysis-btn").addEventListener("click", async () =
     renderWarnings([]);
     return;
   }
+  analysisPrompts = {
+    main: String(out.main_prompt || mainPrompt).trim(),
+    linked: Array.isArray(out.linked_prompts) ? out.linked_prompts.map((x) => String(x || "").trim()).filter(Boolean) : linked,
+  };
   status.textContent = `Готово. Проверено: ${out.frames_checked}, WARNING: ${out.warnings_count}`;
   renderWarnings(out.warnings || []);
 });
@@ -654,58 +923,85 @@ async function generateInlineReport() {
   const st = document.getElementById("report-status");
   const outBox = document.getElementById("report-result");
   if (!selectedFolder) {
-    st.textContent = "Сначала выберите папку.";
+    if (st) st.textContent = "Сначала выберите папку.";
     return;
   }
-  const rows = Array.from(document.querySelectorAll(".human-row"));
-  if (!rows.length) {
-    st.textContent = "Нет данных по людям на фото.";
+  const formats = getSelectedReportFormats();
+  if (!formats.length) {
+    if (st) st.textContent = "Выберите хотя бы один формат отчёта (Word, HTML, JSON или TXT).";
     return;
   }
-  const items = rows.map((row) => {
-    const hid = String(row.getAttribute("data-human-id") || "").trim();
-    const building = String(row.querySelector(".human-building")?.value || "").trim();
-    const contractor = String(row.querySelector(".human-contractor")?.value || "").trim();
-    const mid = middleWarningByHumanId[hid] || null;
-    const reasons = Array.isArray(mid?.reasons) ? mid.reasons : [];
-    return {
+  const checked = document.querySelectorAll(".human-report-include:checked");
+  if (!checked.length) {
+    if (st) st.textContent = "Отметьте галочкой хотя бы одного human_id для отчёта.";
+    return;
+  }
+  const items = [];
+  checked.forEach((cb) => {
+    const hid = String(cb.getAttribute("data-human-id") || "").trim();
+    const block = humanBlockById(hid);
+    if (!block) return;
+    const violations = violationsSummaryForHuman(hid);
+    if (!violations) return;
+    const building = String(block.querySelector(".human-building")?.value || "").trim();
+    const contractor = String(block.querySelector(".human-contractor")?.value || "").trim();
+    const contract = humanContractValue(block);
+    const deadline = String(block.querySelector(".human-deadline")?.value || "").trim();
+    const resolved = String(block.querySelector(".human-resolved")?.value || "").trim();
+    items.push({
       human_id: hid,
       building,
       contractor,
-      reasons,
-      frame: Number(mid?.frame ?? -1),
-      image_url: String(mid?.image_url || ""),
-    };
+      contract,
+      violations,
+      deadline,
+      resolved,
+      reasons: reasonsForHuman(hid),
+      image_url: reportImageForHuman(hid),
+    });
   });
-  if (items.some((x) => !x.building || !x.contractor)) {
-    st.textContent = "Заполните здание и подрядчика для каждого human_id.";
+  if (!items.length) {
+    if (st) st.textContent = "Нет отмеченных human_id для отчёта.";
     return;
   }
-  st.textContent = "Генерация отчета...";
+  if (items.some((x) => !x.building || !x.contractor || !x.contract)) {
+    if (st) st.textContent = "Заполните здание, подрядчика и договор для каждого human_id с отмеченными нарушениями.";
+    return;
+  }
+  const btn = document.getElementById("gen-inline-report-btn");
+  if (btn) btn.disabled = true;
+  if (st) st.textContent = `Генерация отчёта (${formats.join(", ")})...`;
+  if (outBox) outBox.innerHTML = "";
   const out = await apiPost("/api/report/generate", {
     folder: selectedFolder,
     frame: -1,
     image_url: "",
     items,
+    formats,
   });
+  setReportEnabled();
   if (!out.ok) {
-    st.textContent = `Ошибка отчета: ${out.error || "unknown"}`;
+    if (st) st.textContent = `Ошибка отчёта: ${out.error || "unknown"}`;
     return;
   }
-  st.textContent = "Отчет готов.";
+  if (st) st.textContent = "Отчёт готов. Скачайте выбранные форматы:";
   const rep = out.report || {};
-  outBox.innerHTML = `
+  const links = [];
+  if (out.report_docx_url) links.push(`<a class="report-dl" href="${esc(out.report_docx_url)}" download>Скачать Word (.docx)</a>`);
+  if (out.report_html_url) links.push(`<a class="report-dl" href="${esc(out.report_html_url)}" target="_blank" rel="noopener">Открыть HTML</a>`);
+  if (out.report_json_url) links.push(`<a class="report-dl" href="${esc(out.report_json_url)}" target="_blank" rel="noopener">JSON</a>`);
+  if (out.report_txt_url) links.push(`<a class="report-dl" href="${esc(out.report_txt_url)}" target="_blank" rel="noopener">TXT</a>`);
+  if (outBox) {
+    outBox.innerHTML = `
     <div class="report-box">
       <div><strong>${esc(rep.id || "")}</strong></div>
-      <div class="muted">Людей в отчете: ${Array.isArray(rep.items) ? rep.items.length : 0}</div>
+      <div class="muted">Нарушений в отчёте: ${Array.isArray(rep.items) ? rep.items.length : 0}</div>
       <div class="muted">WARNING: ${Number(rep.warnings_count || 0)}</div>
-      <div class="row">
-        <a href="${esc(out.report_json_url || "#")}" target="_blank" rel="noopener">JSON</a>
-        <a href="${esc(out.report_txt_url || "#")}" target="_blank" rel="noopener">TXT</a>
-        <a href="${esc(out.report_html_url || "#")}" target="_blank" rel="noopener">HTML</a>
-      </div>
+      <div class="row report-links">${links.join("") || "<span class='err'>Файлы не созданы</span>"}</div>
     </div>
   `;
+    outBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 async function buildVideoForOneHuman(humanId) {
@@ -739,6 +1035,13 @@ document.getElementById("inf-building-add").addEventListener("click", () => addI
 document.getElementById("inf-building-del").addEventListener("click", () => delInf("buildings", "inf-buildings-list"));
 document.getElementById("inf-contractor-add").addEventListener("click", () => addInf("contractors", "inf-contractor-input"));
 document.getElementById("inf-contractor-del").addEventListener("click", () => delInf("contractors", "inf-contractors-list"));
+document.getElementById("inf-contract-add").addEventListener("click", () => addInf("contracts", "inf-contract-input"));
+document.getElementById("inf-contract-del").addEventListener("click", () => delInf("contracts", "inf-contracts-list"));
+
+document.getElementById("gen-inline-report-btn")?.addEventListener("click", generateInlineReport);
+["report-fmt-docx", "report-fmt-html", "report-fmt-json", "report-fmt-txt"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("change", setReportEnabled);
+});
 
 document.getElementById("refresh-btn").addEventListener("click", refreshList);
 document.getElementById("stats-refresh-btn")?.addEventListener("click", loadStatsTable);

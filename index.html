@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
@@ -82,6 +82,20 @@
           <div class="bar"></div>
         </div>
         <div id="warnings-list"></div>
+        <div id="report-panel" class="report-panel hidden">
+          <h3>Формирование отчёта</h3>
+          <p class="muted small">Галочка «Включить в отчёт» — у каждого human_id в списке выше. Здесь только формат и кнопка.</p>
+          <p id="report-selection-summary" class="report-selection-summary muted small"></p>
+          <div class="report-formats">
+            <label><input type="checkbox" id="report-fmt-docx" value="docx" checked /> Word (.docx)</label>
+            <label><input type="checkbox" id="report-fmt-html" value="html" checked /> HTML</label>
+            <label><input type="checkbox" id="report-fmt-json" value="json" /> JSON</label>
+            <label><input type="checkbox" id="report-fmt-txt" value="txt" /> TXT</label>
+          </div>
+          <div class="row">
+            <button id="gen-inline-report-btn" type="button" disabled>Сформировать отчёт</button>
+          </div>
+        </div>
         <div id="report-status" class="muted"></div>
         <div id="report-result" class="muted"></div>
         <div id="warning-video-box" class="hidden">
@@ -128,6 +142,17 @@
               <input id="inf-contractor-input" type="text" placeholder="ООО Рога и Копыта" />
               <button id="inf-contractor-add" type="button">Добавить</button>
               <button id="inf-contractor-del" type="button">Удалить</button>
+            </div>
+          </article>
+          <article class="inf-col">
+            <h3>Договоры подряда</h3>
+            <label>Список
+              <select id="inf-contracts-list"></select>
+            </label>
+            <div class="row">
+              <input id="inf-contract-input" type="text" placeholder="Договор подряда №1 от 01.01.2026" />
+              <button id="inf-contract-add" type="button">Добавить</button>
+              <button id="inf-contract-del" type="button">Удалить</button>
             </div>
           </article>
         </div>
