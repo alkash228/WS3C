@@ -12,14 +12,13 @@
       <div class="row">
         <button type="button" class="tab-btn active" data-tab="main-tab">Работа</button>
         <button type="button" class="tab-btn" data-tab="stats-tab">Статистика</button>
-        <button type="button" class="tab-btn" data-tab="inf-tab">INF</button>
+        <button type="button" class="tab-btn" data-tab="inf-tab">Справочник</button>
       </div>
     </section>
 
     <section id="main-tab" class="tab-pane">
       <section class="card">
         <h1>WEB samv</h1>
-        <p class="muted">Только видео + промпт. Папка создается автоматически после обработки. Несколько классов: разделяйте <code>.</code> или <code>,</code> (например: <code>человек . каска</code>) — бэкенд сделает несколько прогонов и объединит JSON. SAM3.1 Multiplex ускоряет много экземпляров <em>одного</em> класса за проход.</p>
         <div class="row">
           <input id="api-base-input" type="url" placeholder="http://127.0.0.1:8000" />
           <button id="api-connect-btn" type="button">Подключить</button>
@@ -46,6 +45,10 @@
           </label>
           <label>Делитель FPS (FPS/N)
             <input id="fps-div" type="number" min="1" step="1" value="1" />
+          </label>
+          <label>Нарезка видео, сек (0 — без нарезки)
+            <input id="video-part-sec" type="number" min="0" step="1" value="0" />
+            <span class="hint">Длинное видео режется на части указанной длины; результаты объединяются в один JSON.</span>
           </label>
           <button id="process-btn" type="submit">Обработать видео</button>
         </form>
@@ -118,45 +121,68 @@
     </section>
 
     <section id="inf-tab" class="tab-pane hidden">
-      <section class="card">
-        <h2>INF: Справочники</h2>
-        <p id="inf-root-hint" class="muted mono"></p>
+      <section class="card inf-page">
+        <header class="inf-page-header">
+          <div>
+            <h2>Справочники</h2>
+            <p class="muted">Здания, подрядчики и договоры подряда для отчётов. Данные хранятся в папке <code>INF/</code> на сервере.</p>
+          </div>
+          <p id="inf-root-hint" class="inf-path mono"></p>
+        </header>
         <div class="inf-grid">
-          <article class="inf-col">
-            <h3>Здания</h3>
-            <label>Список
-              <select id="inf-buildings-list"></select>
+          <article class="inf-card" data-kind="buildings">
+            <div class="inf-card-head">
+              <span class="inf-card-icon" aria-hidden="true">🏢</span>
+              <div>
+                <h3>Здания</h3>
+                <span id="inf-buildings-count" class="inf-count">0</span>
+              </div>
+            </div>
+            <label class="inf-list-label">Записи
+              <select id="inf-buildings-list" size="6" class="inf-select"></select>
             </label>
-            <div class="row">
+            <div class="inf-toolbar">
               <input id="inf-building-input" type="text" placeholder="Корпус 1" />
-              <button id="inf-building-add" type="button">Добавить</button>
-              <button id="inf-building-del" type="button">Удалить</button>
+              <button id="inf-building-add" type="button" class="btn-primary">Добавить</button>
+              <button id="inf-building-del" type="button" class="btn-ghost">Удалить</button>
             </div>
           </article>
-          <article class="inf-col">
-            <h3>Подрядчики</h3>
-            <label>Список
-              <select id="inf-contractors-list"></select>
+          <article class="inf-card" data-kind="contractors">
+            <div class="inf-card-head">
+              <span class="inf-card-icon" aria-hidden="true">👷</span>
+              <div>
+                <h3>Подрядчики</h3>
+                <span id="inf-contractors-count" class="inf-count">0</span>
+              </div>
+            </div>
+            <label class="inf-list-label">Записи
+              <select id="inf-contractors-list" size="6" class="inf-select"></select>
             </label>
-            <div class="row">
+            <div class="inf-toolbar">
               <input id="inf-contractor-input" type="text" placeholder="ООО Рога и Копыта" />
-              <button id="inf-contractor-add" type="button">Добавить</button>
-              <button id="inf-contractor-del" type="button">Удалить</button>
+              <button id="inf-contractor-add" type="button" class="btn-primary">Добавить</button>
+              <button id="inf-contractor-del" type="button" class="btn-ghost">Удалить</button>
             </div>
           </article>
-          <article class="inf-col">
-            <h3>Договоры подряда</h3>
-            <label>Список
-              <select id="inf-contracts-list"></select>
+          <article class="inf-card" data-kind="contracts">
+            <div class="inf-card-head">
+              <span class="inf-card-icon" aria-hidden="true">📄</span>
+              <div>
+                <h3>Договоры подряда</h3>
+                <span id="inf-contracts-count" class="inf-count">0</span>
+              </div>
+            </div>
+            <label class="inf-list-label">Записи
+              <select id="inf-contracts-list" size="6" class="inf-select"></select>
             </label>
-            <div class="row">
+            <div class="inf-toolbar">
               <input id="inf-contract-input" type="text" placeholder="Договор подряда №1 от 01.01.2026" />
-              <button id="inf-contract-add" type="button">Добавить</button>
-              <button id="inf-contract-del" type="button">Удалить</button>
+              <button id="inf-contract-add" type="button" class="btn-primary">Добавить</button>
+              <button id="inf-contract-del" type="button" class="btn-ghost">Удалить</button>
             </div>
           </article>
         </div>
-        <div id="inf-status" class="muted"></div>
+        <div id="inf-status" class="inf-status muted"></div>
       </section>
     </section>
   </main>

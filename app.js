@@ -112,38 +112,48 @@ function uniqueDetectedViolations(warnings, hid) {
   return Array.from(map.values());
 }
 
+function humanViolBlock(hid) {
+  return humanBlockById(hid);
+}
+
+function humanViolationText(hid) {
+  const block = humanViolBlock(hid);
+  return String(block?.querySelector(".human-violation-text")?.value || "").trim();
+}
+
 function violationsSummaryForHuman(hid) {
+  const text = humanViolationText(hid);
+  if (text) return text;
+  const block = humanViolBlock(hid);
+  if (block?.querySelector(".human-violation-text")) return "";
   const list = detectedViolationsByHumanId[hid] || [];
   if (list.length) return list.map((v) => v.label || v.text).join("\n");
-  const seen = new Set();
-  const lines = [];
-  (warningsByHumanId[hid] || []).forEach((w) => {
-    (Array.isArray(w?.reasons) ? w.reasons : []).forEach((r) => {
-      const s = String(r || "").trim();
-      if (s && !seen.has(s)) {
-        seen.add(s);
-        lines.push(formatDefectLabel(s, hid));
-      }
-    });
-  });
-  return lines.join("\n");
+  return "";
 }
 
 function reasonsForHuman(hid) {
+  const text = humanViolationText(hid);
+  if (text) return [text];
+  const block = humanViolBlock(hid);
+  if (block?.querySelector(".human-violation-text")) return [];
   const list = detectedViolationsByHumanId[hid] || [];
   if (list.length) return list.map((v) => v.text);
-  const seen = new Set();
-  const out = [];
-  (warningsByHumanId[hid] || []).forEach((w) => {
-    (Array.isArray(w?.reasons) ? w.reasons : []).forEach((r) => {
-      const s = String(r || "").trim();
-      if (s && !seen.has(s)) {
-        seen.add(s);
-        out.push(s);
-      }
-    });
-  });
-  return out;
+  return [];
+}
+
+function violationFieldHtml(hid, detected) {
+  const top = Array.isArray(detected) && detected.length
+    ? detected.reduce((a, b) => ((b.count || 0) > (a.count || 0) ? b : a), detected[0])
+    : null;
+  const hint = top
+    ? `<p class="muted small viol-hint">Система: ${esc(top.label || formatDefectLabel(top.text, hid))}</p>`
+    : "";
+  return `
+    <label class="human-violation-field full">
+      Нарушение
+      <input class="human-violation-text" type="text" placeholder="Например: отсутствует каска" />
+    </label>
+    ${hint}`;
 }
 
 function reportImageForHuman(hid) {
@@ -179,7 +189,7 @@ function bindHumanReportPickers() {
       updateReportSelectionSummary();
     });
   });
-  document.querySelectorAll(".human-building, .human-contractor, .human-contract, .human-contract-text, .human-deadline, .human-resolved").forEach((el) => {
+  document.querySelectorAll(".human-building, .human-contractor, .human-contract, .human-contract-text, .human-deadline, .human-resolved, .human-violation-text").forEach((el) => {
     if (el.dataset.boundViol) return;
     el.dataset.boundViol = "1";
     el.addEventListener("change", setReportEnabled);
@@ -388,7 +398,7 @@ function renderStatsTable(items) {
     return `<tr${isSelected ? " class=\"stats-row-selected\"" : ""}>
       <td>${esc(folder || "-")}</td>
       <td>${esc(String(s?.video_name || "-"))}</td>
-      <td>${esc(`D/${fmtNum(s?.scale_div || 1, 2)} | FPS/${fmtNum(s?.fps_div || 1, 0)}`)}</td>
+      <td>${esc(`D/${fmtNum(s?.scale_div || 1, 2)} | FPS/${fmtNum(s?.fps_div || 1, 0)}${Number(s?.video_part_sec || 0) > 0 ? ` | части ${fmtNum(s.video_part_sec, 0)}с×${fmtNum(s?.chunks_total || 0, 0)}` : ""}`)}</td>
       <td>${esc(`${srcWh} -> ${procWh}`)}</td>
       <td>${esc(fpsPair)}</td>
       <td>${esc(fmtNum(s?.frames_total || 0, 0))}</td>
@@ -489,6 +499,7 @@ function renderWarnings(items) {
           </div>
           <div class="muted">Всего WARNING: ${arr.length}</div>
           <div class="inline-report human-block" data-human-id="${esc(hid)}">
+            ${violationFieldHtml(hid, detected)}
             <h3>Данные для отчёта</h3>
             <div class="human-row">
               <label>Здание
@@ -528,10 +539,23 @@ function renderWarnings(items) {
   updateReportPanel();
 }
 
+function updateInfCounts() {
+  const b = (infOptions.buildings || []).length;
+  const c = (infOptions.contractors || []).length;
+  const k = (infOptions.contracts || []).length;
+  const elB = document.getElementById("inf-buildings-count");
+  const elC = document.getElementById("inf-contractors-count");
+  const elK = document.getElementById("inf-contracts-count");
+  if (elB) elB.textContent = String(b);
+  if (elC) elC.textContent = String(c);
+  if (elK) elK.textContent = String(k);
+}
+
 function fillInfSelects() {
   setSelectOptions(document.getElementById("inf-buildings-list"), infOptions.buildings || [], false);
   setSelectOptions(document.getElementById("inf-contractors-list"), infOptions.contractors || [], false);
   setSelectOptions(document.getElementById("inf-contracts-list"), infOptions.contracts || [], false);
+  updateInfCounts();
   fillRowSelects();
   setReportEnabled();
 }
@@ -812,6 +836,10 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
   if (!Number.isFinite(fpsDiv) || fpsDiv < 1) fpsDiv = 1;
   scaleDiv = Math.round(scaleDiv * 100) / 100;
   fpsDiv = Math.max(1, Math.round(fpsDiv));
+  const partSecInp = document.getElementById("video-part-sec");
+  let videoPartSec = Number(partSecInp?.value || "0");
+  if (!Number.isFinite(videoPartSec) || videoPartSec < 0) videoPartSec = 0;
+  videoPartSec = Math.round(videoPartSec * 10) / 10;
   const status = document.getElementById("status");
   const btn = document.getElementById("process-btn");
   if (!video) return alert("Выберите видео");
@@ -823,9 +851,11 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
   fd.append("fps_half", fpsHalf ? "true" : "false");
   fd.append("scale_div", String(scaleDiv));
   fd.append("fps_div", String(fpsDiv));
+  fd.append("video_part_sec", String(videoPartSec));
   const tags = [];
   if (scaleDiv > 1) tags.push(`D/${scaleDiv}`);
   if (fpsDiv > 1) tags.push(`FPS/${fpsDiv}`);
+  if (videoPartSec > 0) tags.push(`части/${videoPartSec}с`);
   status.textContent = tags.length
     ? `Обработка началась (режим ${tags.join(" + ")})...`
     : "Обработка началась...";
@@ -839,6 +869,9 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
   const doneTags = [];
   if (Number(res.scale_div || 1) > 1) doneTags.push(`D/${Number(res.scale_div)}`);
   if (Number(res.fps_div || 1) > 1) doneTags.push(`FPS/${Number(res.fps_div)}`);
+  if (Number(res.video_part_sec || 0) > 0) {
+    doneTags.push(`части/${Number(res.video_part_sec)}с×${Number(res.chunks_total || 0)}`);
+  }
   status.textContent = `Готово. Создана папка: ${res.folder || "-"}${doneTags.length ? ` (${doneTags.join(" + ")})` : ""}`;
   document.getElementById("video").value = "";
   await refreshList();
@@ -937,12 +970,15 @@ async function generateInlineReport() {
     return;
   }
   const items = [];
-  checked.forEach((cb) => {
+  for (const cb of checked) {
     const hid = String(cb.getAttribute("data-human-id") || "").trim();
     const block = humanBlockById(hid);
-    if (!block) return;
+    if (!block) continue;
     const violations = violationsSummaryForHuman(hid);
-    if (!violations) return;
+    if (!violations) {
+      if (st) st.textContent = `Впишите нарушение для human_id:${hid}.`;
+      return;
+    }
     const building = String(block.querySelector(".human-building")?.value || "").trim();
     const contractor = String(block.querySelector(".human-contractor")?.value || "").trim();
     const contract = humanContractValue(block);
@@ -959,7 +995,7 @@ async function generateInlineReport() {
       reasons: reasonsForHuman(hid),
       image_url: reportImageForHuman(hid),
     });
-  });
+  }
   if (!items.length) {
     if (st) st.textContent = "Нет отмеченных human_id для отчёта.";
     return;

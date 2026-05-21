@@ -1128,6 +1128,8 @@ def _processing_stats_for_folder(folder_name: str) -> dict[str, object]:
     proc_map = proc if isinstance(proc, dict) else {}
     scale_div = float(proc_map.get("scale_div", payload.get("fast_scale_div", 1.0)) or 1.0)
     fps_div = int(proc_map.get("fps_div", payload.get("fps_div", 1)) or 1)
+    video_part_sec = float(proc_map.get("video_part_sec", 0.0) or 0.0)
+    chunks_total = int(proc_map.get("chunks_total", 1) or 1)
     source_fps = float(proc_map.get("source_fps", payload.get("fps", 0.0)) or 0.0)
     processed_fps = float(proc_map.get("processed_fps", payload.get("fps", 0.0)) or 0.0)
     source_w = int(proc_map.get("source_width", payload.get("width", 0)) or 0)
@@ -1141,6 +1143,8 @@ def _processing_stats_for_folder(folder_name: str) -> dict[str, object]:
         "prompt": str(payload.get("prompt", "") or ""),
         "scale_div": float(scale_div),
         "fps_div": int(fps_div),
+        "video_part_sec": float(video_part_sec),
+        "chunks_total": int(chunks_total),
         "source_fps": float(source_fps),
         "processed_fps": float(processed_fps),
         "source_width": int(source_w),
@@ -1270,6 +1274,142 @@ def _video_meta_from_bytes(video_bytes: bytes, suffix: str = ".mp4") -> tuple[in
                 tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def _video_duration_sec(video_bytes: bytes, suffix: str) -> float:
+    ext = suffix if suffix.startswith(".") else f".{suffix}"
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(video_bytes)
+            tmp_path = Path(tmp.name)
+        cap = cv2.VideoCapture(str(tmp_path))
+        if cap.isOpened():
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+            frames = float(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            cap.release()
+            if fps > 0 and frames > 0:
+                return frames / fps
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0:
+            return float((proc.stdout or "0").strip() or 0)
+    except Exception:
+        return 0.0
+    finally:
+        try:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return 0.0
+
+
+def _ffmpeg_cut_segment(video_bytes: bytes, suffix: str, start_sec: float, dur_sec: float) -> bytes | None:
+    ext = suffix if suffix.startswith(".") else f".{suffix}"
+    src_path: Path | None = None
+    out_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as src:
+            src.write(video_bytes)
+            src_path = Path(src.name)
+        out_path = src_path.with_suffix(".part.mp4")
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{start_sec:.3f}",
+            "-i",
+            str(src_path),
+            "-t",
+            f"{dur_sec:.3f}",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            str(out_path),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not out_path.is_file():
+            return None
+        return out_path.read_bytes()
+    finally:
+        for p in (src_path, out_path):
+            if p is None:
+                continue
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _split_video_chunks(video_bytes: bytes, suffix: str, part_sec: float) -> list[bytes]:
+    """part_sec <= 0 — одно видео целиком без нарезки."""
+    sec = float(part_sec or 0)
+    if sec <= 0:
+        return [video_bytes]
+    duration = _video_duration_sec(video_bytes, suffix)
+    if duration <= 0 or duration <= sec + 0.05:
+        return [video_bytes]
+    out: list[bytes] = []
+    start = 0.0
+    while start < duration - 0.02:
+        chunk = _ffmpeg_cut_segment(video_bytes, suffix, start, sec)
+        if chunk:
+            out.append(chunk)
+        start += sec
+    return out or [video_bytes]
+
+
+def _video_part_sec_from_form(form) -> float:
+    raw = str(form.getfirst("video_part_sec", "") or form.getfirst("part_sec", "") or "0").strip()
+    try:
+        sec = float(raw or 0)
+    except Exception:
+        sec = 0.0
+    return max(0.0, sec)
+
+
+def _merge_chunk_payloads(payloads: list[dict]) -> dict:
+    if not payloads:
+        return {}
+    if len(payloads) == 1:
+        return dict(payloads[0])
+    merged: dict[str, object] = {
+        "schema": payloads[0].get("schema", ""),
+        "width": payloads[0].get("width", 0),
+        "height": payloads[0].get("height", 0),
+        "frames": [],
+    }
+    offset = 0
+    for p in payloads:
+        frames = p.get("frames")
+        if not isinstance(frames, list):
+            continue
+        for fr in frames:
+            if not isinstance(fr, dict):
+                continue
+            nf = dict(fr)
+            try:
+                nf["frame"] = int(nf.get("frame", 0)) + offset
+            except Exception:
+                nf["frame"] = offset
+            merged["frames"].append(nf)
+        offset = len(merged["frames"])
+    return merged
 
 
 def _transform_video_bytes_ffmpeg(
@@ -1801,6 +1941,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             scale_div = 1.0
         if fps_div < 1:
             fps_div = 1
+        video_part_sec = _video_part_sec_from_form(form)
         if not prompt:
             _json_response(self, {"ok": False, "error": "Need prompt"}, code=400)
             return
@@ -1819,22 +1960,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         meta = _video_meta_from_bytes(video_bytes, suffix=ext)
         original_wh = (int(meta[0]), int(meta[1])) if meta is not None else None
         original_fps = float(meta[2]) if meta is not None else 0.0
-        send_video_name = video_name
-        send_video_bytes = video_bytes
-        if scale_div > 1.0 or fps_div > 1:
-            try:
-                send_video_name = f"{Path(video_name).stem}.fast.mp4"
-                send_video_bytes = _transform_video_bytes_ffmpeg(
-                    video_bytes,
-                    suffix=ext or ".mp4",
-                    scale_div=float(scale_div),
-                    fps_div=int(fps_div),
-                    src_fps=original_fps,
-                )
-            except Exception as exc:
-                _json_response(self, {"ok": False, "error": f"FAST preprocessing failed: {exc}"}, code=500)
-                return
-        send_meta = _video_meta_from_bytes(send_video_bytes, suffix=".mp4")
 
         folder_name = _new_folder_name()
         for _ in range(20):
@@ -1844,25 +1969,86 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             folder_name = f"{_new_folder_name()}_{uuid.uuid4().hex[:4]}"
 
         try:
-            job_id = _start_video_job(send_video_name, send_video_bytes, prompt)
-            _wait_job_done(job_id)
-            result = _http_json_get(f"/jobs/{job_id}/result")
-            _save_processed_outputs(
-                folder_name,
-                result,
-                fallback_video=video_bytes,
-                upscale_to_wh=original_wh if scale_div > 1.0 else None,
-                processing_meta={
+            chunks = _split_video_chunks(video_bytes, ext or ".mp4", video_part_sec)
+            payloads: list[dict] = []
+            job_ids: list[str] = []
+            last_send_meta: tuple[int, int, float] | None = None
+
+            for ci, chunk_bytes in enumerate(chunks):
+                send_video_name = video_name
+                send_video_bytes = chunk_bytes
+                if len(chunks) > 1:
+                    send_video_name = f"{Path(video_name).stem}_part{ci + 1:03d}{ext or '.mp4'}"
+                if scale_div > 1.0 or fps_div > 1:
+                    send_video_name = f"{Path(send_video_name).stem}.fast.mp4"
+                    send_video_bytes = _transform_video_bytes_ffmpeg(
+                        chunk_bytes,
+                        suffix=ext or ".mp4",
+                        scale_div=float(scale_div),
+                        fps_div=int(fps_div),
+                        src_fps=original_fps,
+                    )
+                last_send_meta = _video_meta_from_bytes(send_video_bytes, suffix=".mp4")
+
+                job_id = _start_video_job(send_video_name, send_video_bytes, prompt)
+                job_ids.append(job_id)
+                _wait_job_done(job_id)
+                result = _http_json_get(f"/jobs/{job_id}/result")
+
+                if len(chunks) == 1:
+                    _save_processed_outputs(
+                        folder_name,
+                        result,
+                        fallback_video=video_bytes,
+                        upscale_to_wh=original_wh if scale_div > 1.0 else None,
+                        processing_meta={
+                            "scale_div": float(scale_div),
+                            "fps_div": int(fps_div),
+                            "video_part_sec": float(video_part_sec),
+                            "chunks_total": 1,
+                            "source_fps": float(original_fps),
+                            "processed_fps": float(last_send_meta[2]) if last_send_meta is not None else float(original_fps),
+                            "source_width": int(original_wh[0]) if original_wh is not None else 0,
+                            "source_height": int(original_wh[1]) if original_wh is not None else 0,
+                            "processed_width": int(last_send_meta[0]) if last_send_meta is not None else int(original_wh[0]) if original_wh is not None else 0,
+                            "processed_height": int(last_send_meta[1]) if last_send_meta is not None else int(original_wh[1]) if original_wh is not None else 0,
+                        },
+                    )
+                    break
+
+                data_url = str(result.get("download_data_url") or result.get("download_data_stable_url") or "")
+                if data_url:
+                    raw = _http_bytes_get(data_url)
+                    parsed = json.loads(raw.decode("utf-8"))
+                    if isinstance(parsed, dict):
+                        if original_wh and scale_div > 1.0:
+                            _upscale_result_payload_inplace(parsed, int(original_wh[0]), int(original_wh[1]))
+                        payloads.append(parsed)
+
+            if len(chunks) > 1:
+                merged = _merge_chunk_payloads(payloads)
+                merged["prompt"] = prompt
+                if original_wh:
+                    merged.setdefault("width", int(original_wh[0]))
+                    merged.setdefault("height", int(original_wh[1]))
+                merged["web_samv_processing"] = {
                     "scale_div": float(scale_div),
                     "fps_div": int(fps_div),
+                    "video_part_sec": float(video_part_sec),
+                    "chunks_total": len(chunks),
                     "source_fps": float(original_fps),
-                    "processed_fps": float(send_meta[2]) if send_meta is not None else float(original_fps),
+                    "processed_fps": float(last_send_meta[2]) if last_send_meta is not None else float(original_fps),
                     "source_width": int(original_wh[0]) if original_wh is not None else 0,
                     "source_height": int(original_wh[1]) if original_wh is not None else 0,
-                    "processed_width": int(send_meta[0]) if send_meta is not None else int(original_wh[0]) if original_wh is not None else 0,
-                    "processed_height": int(send_meta[1]) if send_meta is not None else int(original_wh[1]) if original_wh is not None else 0,
-                },
-            )
+                    "processed_width": int(last_send_meta[0]) if last_send_meta is not None else int(original_wh[0]) if original_wh is not None else 0,
+                    "processed_height": int(last_send_meta[1]) if last_send_meta is not None else int(original_wh[1]) if original_wh is not None else 0,
+                }
+                merged["fast_scale_div"] = float(scale_div)
+                merged["fps_div"] = int(fps_div)
+                folder, json_path, _ = _folder_paths(folder_name)
+                folder.mkdir(parents=True, exist_ok=True)
+                json_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+                (folder / "video.mp4").write_bytes(video_bytes)
         except Exception as exc:
             _json_response(self, {"ok": False, "error": f"Process failed: {exc}"}, code=500)
             return
@@ -1872,7 +2058,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             {
                 "ok": True,
                 "folder": folder_name,
-                "job_id": job_id,
+                "job_id": job_ids[-1] if job_ids else "",
+                "job_ids": job_ids,
+                "chunks_total": len(chunks),
+                "video_part_sec": float(video_part_sec),
                 "fast_x2": bool(scale_div == 2.0),
                 "fps_half": bool(fps_div == 2),
                 "scale_div": float(scale_div),
