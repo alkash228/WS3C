@@ -318,12 +318,23 @@ function resetWarningVideo() {
   if (box) box.classList.add("hidden");
 }
 
+function seekVideoToMiddle(vid) {
+  if (!vid) return;
+  const go = () => {
+    const d = Number(vid.duration);
+    if (d > 0 && Number.isFinite(d)) vid.currentTime = d / 2;
+  };
+  if (vid.readyState >= 1) go();
+  else vid.addEventListener("loadedmetadata", go, { once: true });
+}
+
 function showWarningVideo(url) {
   const box = document.getElementById("warning-video-box");
   const vid = document.getElementById("warning-video");
   if (!box || !vid || !url) return;
   vid.src = String(url);
   vid.load();
+  seekVideoToMiddle(vid);
   box.classList.remove("hidden");
 }
 
@@ -511,7 +522,9 @@ function renderWarnings(items) {
   const grouped = groupWarningsByMainId(items);
   const ids = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
   ids.forEach((hid) => {
-    const arr = grouped[hid] || [];
+    const arr = (grouped[hid] || []).slice().sort(
+      (a, b) => Number(a?.frame ?? 0) - Number(b?.frame ?? 0),
+    );
     warningsByHumanId[hid] = arr;
     middleWarningByHumanId[hid] = arr[Math.floor(arr.length / 2)] || null;
   });
@@ -524,7 +537,7 @@ function renderWarnings(items) {
     const arr = grouped[hid] || [];
     const mid = middleWarningByHumanId[hid] || {};
     const detected = detectedViolationsByHumanId[hid] || [];
-    const preview = (detected[0]?.sample || mid);
+    const preview = (mid?.image_url ? mid : (detected[0]?.sample || mid));
     return `
       <article class="warn-card">
         <div class="warn-media">
@@ -1145,6 +1158,7 @@ async function buildVideoForOneHuman(humanId) {
     if (vid) {
       vid.src = String(out.video_url || "");
       vid.load();
+      seekVideoToMiddle(vid);
       shell?.classList.remove("hidden");
     }
     if (st) st.textContent = `Видео готово для human_id:${hid}. Кадров: ${Number(out.frames_used || 0)}`;

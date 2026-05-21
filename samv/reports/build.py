@@ -24,11 +24,12 @@ def norm_report_formats(raw: object) -> set[str]:
 
 def analyzer_mid_warning(warnings: list[dict]) -> dict | None:
 
-    """Первое предупреждение по main_id."""
-    if not warnings:
+    """Средний warning по номеру кадра."""
+    rows = [w for w in warnings if isinstance(w, dict)]
+    if not rows:
         return None
-    idx = len(warnings) // 2
-    x = warnings[idx]
+    rows.sort(key=lambda w: int(w.get("frame", 0) or 0))
+    x = rows[len(rows) // 2]
     return x if isinstance(x, dict) else None
 
 
