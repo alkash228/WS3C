@@ -2,11 +2,33 @@
 setlocal
 cd /d "%~dp0"
 
+set "PY="
+if exist "..\.venv\Scripts\python.exe" set "PY=..\.venv\Scripts\python.exe"
+if not defined PY if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
+if not defined PY set "PY=py"
+
 echo Starting WEB_samv...
-if exist "..\.venv\Scripts\python.exe" (
-  "..\.venv\Scripts\python.exe" "serve.py"
-) else (
-  py "serve.py"
+echo Python: %PY%
+
+"%PY%" -m pip install -q -r requirements-web.txt
+if errorlevel 1 (
+  echo Failed to install Python dependencies. See errors above.
+  pause
+  exit /b 1
+)
+
+"%PY%" -c "from samv.http.server import main"
+if errorlevel 1 (
+  echo Import check failed. Fix errors above before starting the server.
+  pause
+  exit /b 1
+)
+
+"%PY%" serve.py
+if errorlevel 1 (
+  echo Server exited with an error.
+  pause
+  exit /b 1
 )
 
 endlocal
