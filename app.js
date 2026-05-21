@@ -35,6 +35,51 @@ function setBuildVideoEnabled(enabled) {
   if (btn) btn.disabled = !enabled;
 }
 
+function setProgressUi(wrapId, barId, textId, pctId, visible, percent, message) {
+  const wrap = document.getElementById(wrapId);
+  const bar = document.getElementById(barId);
+  const text = document.getElementById(textId);
+  const pct = document.getElementById(pctId);
+  const prog = wrap?.querySelector(".progress");
+  const p = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  if (wrap) {
+    wrap.classList.toggle("hidden", !visible);
+    wrap.setAttribute("aria-hidden", visible ? "false" : "true");
+  }
+  if (bar) bar.style.width = `${p}%`;
+  if (pct) pct.textContent = `${p}%`;
+  if (text && message) text.textContent = String(message);
+  if (prog) prog.setAttribute("aria-valuenow", String(p));
+}
+
+function hideAnalysisProgress() {
+  setProgressUi("analysis-progress-wrap", "analysis-progress-bar", "analysis-progress-text", "analysis-progress-pct", false, 0, "");
+}
+
+function hideVideoProgress() {
+  setProgressUi("video-progress-wrap", "video-progress-bar", "video-progress-text", "video-progress-pct", false, 0, "");
+}
+
+async function pollTaskUntilDone(folder, task, onTick) {
+  const deadline = Date.now() + 2 * 60 * 60 * 1000;
+  while (Date.now() < deadline) {
+    const st = await apiGet(`/api/analyzer/progress?folder=${encodeURIComponent(folder)}&task=${encodeURIComponent(task)}`);
+    if (!st.ok) throw new Error(st.error || "progress failed");
+    const status = String(st.status || "idle");
+    const percent = Number(st.percent || 0);
+    const message = String(st.message || "").trim();
+    if (typeof onTick === "function") onTick(st, percent, message);
+    if (status === "done") return st;
+    if (status === "error") throw new Error(st.error || message || "task failed");
+    if (status === "idle" && !st.started) {
+      await new Promise((r) => setTimeout(r, 350));
+      continue;
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  throw new Error("Timeout waiting for task");
+}
+
 function humanContractValue(row) {
   return String(
     row.querySelector(".human-contract")?.value
@@ -481,23 +526,23 @@ function renderWarnings(items) {
     const detected = detectedViolationsByHumanId[hid] || [];
     const preview = (detected[0]?.sample || mid);
     return `
-      <article class="warn-item warn-layout">
-        <div>
-          <img class="warn-preview-img" src="${esc(preview.image_url || "")}" alt="preview" />
-          <div class="row">
-            <button type="button" class="build-one-video-btn" data-human-id="${esc(hid)}">Сделать видео human_id:${esc(hid)}</button>
+      <article class="warn-card">
+        <div class="warn-media">
+          <img class="warn-preview-img" src="${esc(preview.image_url || "")}" alt="preview human_id:${esc(hid)}" />
+          <button type="button" class="build-one-video-btn btn-secondary btn-sm" data-human-id="${esc(hid)}">Видео · human_id:${esc(hid)}</button>
+          <div class="video-shell hidden" data-video-shell="${esc(hid)}">
+            <video class="warning-video-one" data-human-id="${esc(hid)}" controls preload="metadata"></video>
           </div>
-          <video class="warning-video-one hidden" data-human-id="${esc(hid)}" controls preload="metadata"></video>
         </div>
-        <div class="warn-side">
+        <div class="warn-body">
           <div class="warn-head-row">
-            <strong>human_id:${esc(hid)}</strong>
+            <span class="warn-badge">human_id:${esc(hid)}</span>
             <label class="human-report-toggle">
               <input type="checkbox" class="human-report-include" data-human-id="${esc(hid)}" />
               Включить в отчёт
             </label>
           </div>
-          <div class="muted">Всего WARNING: ${arr.length}</div>
+          <p class="muted small">Всего WARNING: ${arr.length}</p>
           <div class="inline-report human-block" data-human-id="${esc(hid)}">
             ${violationFieldHtml(hid, detected)}
             <h3>Данные для отчёта</h3>
@@ -527,7 +572,7 @@ function renderWarnings(items) {
   }).join("");
   const mainLbl = esc(analysisPrompts.main || getCurrentPrompts().main || "—");
   box.innerHTML = `
-    <p class="muted">Основной промт: <strong>${mainLbl}</strong>. Всего WARNING: ${items.length}</p>
+    <p class="warnings-intro muted small">Основной промт: <strong>${mainLbl}</strong> · всего WARNING: <strong>${items.length}</strong></p>
     ${blocks}
   `;
   fillRowSelects();
@@ -738,8 +783,8 @@ async function refreshList() {
         </div>
       </div>
       <div class="row">
-        <button type="button" data-open="${esc(x.name)}">Открыть</button>
-        <button type="button" data-del="${esc(x.name)}">Удалить</button>
+        <button type="button" class="btn-primary btn-sm" data-open="${esc(x.name)}">Открыть</button>
+        <button type="button" class="btn-ghost btn-sm" data-del="${esc(x.name)}">Удалить</button>
       </div>
     </article>
   `).join("");
@@ -879,6 +924,7 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
 
 document.getElementById("run-analysis-btn").addEventListener("click", async () => {
   const status = document.getElementById("analysis-status");
+  const btn = document.getElementById("run-analysis-btn");
   if (!selectedFolder) {
     status.textContent = "Сначала откройте папку.";
     return;
@@ -896,30 +942,83 @@ document.getElementById("run-analysis-btn").addEventListener("click", async () =
   status.textContent = "Анализ по маскам...";
   setBuildVideoEnabled(false);
   resetWarningVideo();
-  const out = await apiPost("/api/analyzer/run", {
-    folder: selectedFolder,
-    main_prompt: mainPrompt,
-    linked_prompts: linked,
-  });
-  if (!out.ok) {
-    status.textContent = `Ошибка анализа: ${out.error || "unknown"}`;
+  hideVideoProgress();
+  setProgressUi("analysis-progress-wrap", "analysis-progress-bar", "analysis-progress-text", "analysis-progress-pct", true, 0, "Запуск анализа…");
+  if (btn) btn.disabled = true;
+  try {
+    const started = await apiPost("/api/analyzer/run", {
+      folder: selectedFolder,
+      main_prompt: mainPrompt,
+      linked_prompts: linked,
+    });
+    if (!started.ok) {
+      status.textContent = `Ошибка анализа: ${started.error || "unknown"}`;
+      renderWarnings([]);
+      return;
+    }
+    const out = await pollTaskUntilDone(selectedFolder, "analysis", (_st, percent, message) => {
+      setProgressUi(
+        "analysis-progress-wrap",
+        "analysis-progress-bar",
+        "analysis-progress-text",
+        "analysis-progress-pct",
+        true,
+        percent,
+        message || "Анализ…",
+      );
+      if (status) status.textContent = message || `Анализ… ${percent}%`;
+    });
+    analysisPrompts = {
+      main: String(out.main_prompt || mainPrompt).trim(),
+      linked: Array.isArray(out.linked_prompts) ? out.linked_prompts.map((x) => String(x || "").trim()).filter(Boolean) : linked,
+    };
+    status.textContent = `Готово. Проверено: ${out.frames_checked}, WARNING: ${out.warnings_count}`;
+    renderWarnings(out.warnings || []);
+    setProgressUi("analysis-progress-wrap", "analysis-progress-bar", "analysis-progress-text", "analysis-progress-pct", true, 100, "Анализ завершён");
+  } catch (e) {
+    status.textContent = `Ошибка анализа: ${e?.message || e}`;
     renderWarnings([]);
-    return;
+  } finally {
+    if (btn) btn.disabled = false;
+    setTimeout(hideAnalysisProgress, 1200);
   }
-  analysisPrompts = {
-    main: String(out.main_prompt || mainPrompt).trim(),
-    linked: Array.isArray(out.linked_prompts) ? out.linked_prompts.map((x) => String(x || "").trim()).filter(Boolean) : linked,
-  };
-  status.textContent = `Готово. Проверено: ${out.frames_checked}, WARNING: ${out.warnings_count}`;
-  renderWarnings(out.warnings || []);
 });
+
+async function runVideoBuild(mainId) {
+  const status = document.getElementById("analysis-status");
+  const box = document.getElementById("warning-video-box");
+  const vid = document.getElementById("warning-video");
+  const isGlobal = mainId === undefined || mainId === null;
+  const body = { folder: selectedFolder };
+  if (!isGlobal) body.main_id = Number(mainId);
+  hideAnalysisProgress();
+  setProgressUi("video-progress-wrap", "video-progress-bar", "video-progress-text", "video-progress-pct", true, 0, "Запуск сборки видео…");
+  if (isGlobal) box?.classList.add("hidden");
+  const started = await apiPost("/api/analyzer/video", body);
+  if (!started.ok) throw new Error(started.error || "unknown");
+  const out = await pollTaskUntilDone(selectedFolder, "video", (_st, percent, message) => {
+    setProgressUi(
+      "video-progress-wrap",
+      "video-progress-bar",
+      "video-progress-text",
+      "video-progress-pct",
+      true,
+      percent,
+      message || "Сборка видео…",
+    );
+    if (status) status.textContent = message || `Сборка видео… ${percent}%`;
+  });
+  if (vid && isGlobal) {
+    vid.src = String(out.video_url || "");
+    vid.load();
+    box?.classList.remove("hidden");
+  }
+  return out;
+}
 
 document.getElementById("build-video-btn").addEventListener("click", async () => {
   const status = document.getElementById("analysis-status");
   const btn = document.getElementById("build-video-btn");
-  const progress = document.getElementById("video-progress");
-  const box = document.getElementById("warning-video-box");
-  const vid = document.getElementById("warning-video");
   if (!selectedFolder) {
     status.textContent = "Сначала откройте папку.";
     return;
@@ -929,26 +1028,17 @@ document.getElementById("build-video-btn").addEventListener("click", async () =>
     return;
   }
   btn.disabled = true;
-  progress?.classList.remove("hidden");
-  box?.classList.add("hidden");
   status.textContent = "Сборка видео...";
   try {
-    const out = await apiPost("/api/analyzer/video", { folder: selectedFolder });
-    if (!out.ok) {
-      status.textContent = `Ошибка сборки видео: ${out.error || "unknown"}`;
-      return;
-    }
-    if (vid) {
-      vid.src = String(out.video_url || "");
-      vid.load();
-    }
-    box?.classList.remove("hidden");
+    const out = await runVideoBuild(null);
     status.textContent = `Видео готово. Кадров: ${Number(out.frames_used || 0)}, FPS: ${Number(out.fps || 0).toFixed(2)}`;
+    setProgressUi("video-progress-wrap", "video-progress-bar", "video-progress-text", "video-progress-pct", true, 100, "Видео готово");
   } catch (e) {
     status.textContent = `Ошибка сборки видео: ${e?.message || e}`;
   } finally {
-    progress?.classList.add("hidden");
+    btn.disabled = false;
     setBuildVideoEnabled(Array.isArray(lastWarnings) && lastWarnings.length > 0 && !!selectedFolder);
+    setTimeout(hideVideoProgress, 1500);
   }
 });
 
@@ -1045,25 +1135,24 @@ async function buildVideoForOneHuman(humanId) {
   const hid = String(humanId || "").trim();
   if (!selectedFolder || !hid) return;
   const btn = document.querySelector(`.build-one-video-btn[data-human-id="${hid}"]`);
-  const vid = document.querySelector(`.warning-video-one[data-human-id="${hid}"]`);
+  const q = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(hid) : hid;
+  const vid = document.querySelector(`.warning-video-one[data-human-id="${q}"]`);
+  const shell = document.querySelector(`[data-video-shell="${q}"]`);
   if (btn) btn.disabled = true;
   if (st) st.textContent = `Сборка видео для human_id:${hid}...`;
   try {
-    const out = await apiPost("/api/analyzer/video", { folder: selectedFolder, main_id: Number(hid) });
-    if (!out.ok) {
-      if (st) st.textContent = `Ошибка видео human_id:${hid}: ${out.error || "unknown"}`;
-      return;
-    }
+    const out = await runVideoBuild(Number(hid));
     if (vid) {
       vid.src = String(out.video_url || "");
       vid.load();
-      vid.classList.remove("hidden");
+      shell?.classList.remove("hidden");
     }
     if (st) st.textContent = `Видео готово для human_id:${hid}. Кадров: ${Number(out.frames_used || 0)}`;
   } catch (e) {
     if (st) st.textContent = `Ошибка видео human_id:${hid}: ${e?.message || e}`;
   } finally {
     if (btn) btn.disabled = false;
+    setTimeout(hideVideoProgress, 1500);
   }
 }
 

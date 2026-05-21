@@ -14,6 +14,7 @@ import socketserver
 import base64
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -43,6 +44,47 @@ INF_BUILDINGS_FILE = INF_ROOT / "buildings.json"
 INF_CONTRACTORS_FILE = INF_ROOT / "contractors.json"
 INF_CONTRACTS_FILE = INF_ROOT / "contracts.json"
 _RUNTIME: dict[str, object] = {"web_port": PORT, "api_port": API_PORT_HINT, "lan_ipv4": []}
+_TASK_LOCK = threading.Lock()
+_TASKS: dict[str, dict[str, object]] = {}
+
+
+def _task_key(folder: str, task: str) -> str:
+    return f"{_safe_name(folder)}:{task}"
+
+
+def _task_get(folder: str, task: str) -> dict[str, object]:
+    key = _task_key(folder, task)
+    with _TASK_LOCK:
+        row = _TASKS.get(key)
+        return dict(row) if isinstance(row, dict) else {}
+
+
+def _task_set(folder: str, task: str, **fields: object) -> None:
+    key = _task_key(folder, task)
+    with _TASK_LOCK:
+        row = _TASKS.setdefault(key, {})
+        if not isinstance(row, dict):
+            row = {}
+            _TASKS[key] = row
+        row.update(fields)
+        row["folder"] = _safe_name(folder)
+        row["task"] = task
+        row["updated_at"] = time.time()
+
+
+def _task_progress(folder: str, task: str, done: int, total: int, message: str) -> None:
+    total_n = max(1, int(total))
+    done_n = max(0, min(int(done), total_n))
+    pct = int(round(100.0 * float(done_n) / float(total_n)))
+    _task_set(
+        folder,
+        task,
+        status="running",
+        percent=pct,
+        done=done_n,
+        total=total_n,
+        message=str(message or "").strip(),
+    )
 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 _INF_DEFAULTS = {
@@ -885,33 +927,25 @@ def _reason_for_overlay(reason: str) -> str:
     return out or "warning condition failed"
 
 
-def _draw_danger_crop(frame_bgr: np.ndarray, main_mask: np.ndarray, reasons: list[str]) -> np.ndarray:
+def _draw_danger_frame(frame_bgr: np.ndarray, main_mask: np.ndarray, reasons: list[str]) -> np.ndarray:
+    out = frame_bgr.copy()
     bb = _bbox_from_mask(main_mask)
-    if bb is None:
-        crop = frame_bgr.copy()
-    else:
+    if bb is not None:
         x, y, bw, bh = bb
-        padx = max(8, int(float(bw) * float(AN_CROP_PAD_RATIO)))
-        pady = max(8, int(float(bh) * float(AN_CROP_PAD_RATIO)))
-        x0 = max(0, x - padx)
-        y0 = max(0, y - pady)
-        x2 = min(frame_bgr.shape[1], x + bw + padx)
-        y2 = min(frame_bgr.shape[0], y + bh + pady)
-        crop = frame_bgr[y0:y2, x0:x2].copy()
         cv2.rectangle(
-            crop,
-            (max(0, x - x0), max(0, y - y0)),
-            (max(0, x + bw - 1 - x0), max(0, y + bh - 1 - y0)),
+            out,
+            (x, y),
+            (x + bw - 1, y + bh - 1),
             (30, 220, 255),
             2,
             lineType=cv2.LINE_AA,
         )
-    bar_h = min(56, max(34, int(crop.shape[0] * 0.12)))
-    overlay = crop.copy()
-    cv2.rectangle(overlay, (0, 0), (crop.shape[1] - 1, bar_h), (0, 0, 180), thickness=-1)
-    cv2.addWeighted(overlay, 0.65, crop, 0.35, 0.0, dst=crop)
+    bar_h = min(56, max(34, int(out.shape[0] * 0.08)))
+    overlay = out.copy()
+    cv2.rectangle(overlay, (0, 0), (out.shape[1] - 1, bar_h), (0, 0, 180), thickness=-1)
+    cv2.addWeighted(overlay, 0.55, out, 0.45, 0.0, dst=out)
     cv2.putText(
-        crop,
+        out,
         "DANGER",
         (10, int(bar_h * 0.7)),
         cv2.FONT_HERSHEY_SIMPLEX,
@@ -922,20 +956,50 @@ def _draw_danger_crop(frame_bgr: np.ndarray, main_mask: np.ndarray, reasons: lis
     )
     if reasons:
         txt = "; ".join(_reason_for_overlay(x) for x in reasons if str(x or "").strip())
-        max_chars = max(20, int(crop.shape[1] / 9))
+        max_chars = max(20, int(out.shape[1] / 9))
         if len(txt) > max_chars:
             txt = txt[: max_chars - 3] + "..."
         cv2.putText(
-            crop,
+            out,
             txt,
-            (10, min(crop.shape[0] - 10, bar_h + 24)),
+            (10, min(out.shape[0] - 10, bar_h + 24)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
             (245, 245, 245),
             1,
             lineType=cv2.LINE_AA,
         )
-    return crop
+    return out
+
+
+def _frame_instances(payload: dict, fidx: int) -> list[dict]:
+    frames = payload.get("frames")
+    if not isinstance(frames, list):
+        return []
+    for fr in frames:
+        if not isinstance(fr, dict):
+            continue
+        try:
+            if int(fr.get("frame", -1)) != int(fidx):
+                continue
+        except Exception:
+            continue
+        inst = fr.get("instances")
+        return [x for x in inst if isinstance(x, dict)] if isinstance(inst, list) else []
+    return []
+
+
+def _mask_for_main_id(
+    instances: list[dict],
+    main_prompt: str,
+    main_id: int,
+    h: int,
+    w: int,
+) -> np.ndarray | None:
+    for oid, mask in _instance_group_by_label(instances, main_prompt, h, w):
+        if int(oid) == int(main_id):
+            return mask
+    return None
 
 
 @dataclass
@@ -973,53 +1037,53 @@ def _build_warning_video(
     folder_path: Path,
     video_path: Path,
     warnings: list[dict],
+    payload: dict,
+    main_prompt: str,
     main_id: int | None = None,
+    progress_cb=None,
 ) -> dict[str, object]:
     analysis_dir = folder_path / "analysis"
-    warn_dir = analysis_dir / "warnings"
     if main_id is None:
         out_name = "warnings_preview.mp4"
     else:
         out_name = f"warnings_preview_human_{int(main_id)}.mp4"
     out_path = analysis_dir / out_name
 
-    items: list[tuple[int, Path]] = []
-    for w in warnings:
+    h = int(payload.get("height", 0) or 0)
+    w = int(payload.get("width", 0) or 0)
+    if h <= 0 or w <= 0:
+        raise RuntimeError("Invalid width/height in data.json")
+
+    clip_items: list[tuple[int, int, list[str]]] = []
+    seen: set[tuple[int, int]] = set()
+    for witem in warnings:
+        if not isinstance(witem, dict):
+            continue
         if main_id is not None:
             try:
-                wid = int(w.get("main_id"))
+                wid = int(witem.get("main_id"))
             except Exception:
                 continue
             if wid != int(main_id):
                 continue
         try:
-            fidx = int(w.get("frame", -1))
+            fidx = int(witem.get("frame", -1))
+            mid = int(witem.get("main_id"))
         except Exception:
-            fidx = -1
+            continue
         if fidx < 0:
             continue
-        p: Path | None = None
-        image_url = str(w.get("image_url", "") or "")
-        if image_url:
-            name = Path(urlparse(image_url).path).name
-            if name:
-                p0 = warn_dir / name
-                if p0.is_file():
-                    p = p0
-        if p is None:
-            p = warn_dir / f"warn_{fidx:06d}.jpg"
-        if p.is_file():
-            items.append((fidx, p))
-    items.sort(key=lambda x: x[0])
-    if not items:
+        key = (fidx, mid)
+        if key in seen:
+            continue
+        seen.add(key)
+        reasons = witem.get("reasons")
+        clip_items.append((fidx, mid, reasons if isinstance(reasons, list) else []))
+    clip_items.sort(key=lambda x: x[0])
+    if not clip_items:
         raise RuntimeError("No warning frames found. Run analysis first.")
 
     fps = _safe_video_fps(video_path)
-    first = cv2.imread(str(items[0][1]), cv2.IMREAD_COLOR)
-    if first is None or first.size == 0:
-        raise RuntimeError("Cannot read first warning frame image.")
-    h, w = int(first.shape[0]), int(first.shape[1])
-    # libx264 + yuv420p requires even frame dimensions.
     w_enc = max(2, w - (w % 2))
     h_enc = max(2, h - (h % 2))
     tmp_dir = analysis_dir / "warnings_video_frames_tmp"
@@ -1027,18 +1091,36 @@ def _build_warning_video(
         shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_dir.mkdir(parents=True, exist_ok=True)
     written = 0
-    for _, p in items:
-        frame = cv2.imread(str(p), cv2.IMREAD_COLOR)
-        if frame is None or frame.size == 0:
-            continue
-        if frame.shape[0] != h_enc or frame.shape[1] != w_enc:
-            frame = cv2.resize(frame, (w_enc, h_enc), interpolation=cv2.INTER_LINEAR)
-        out_jpg = tmp_dir / f"frame_{written:06d}.jpg"
-        ok = cv2.imwrite(str(out_jpg), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 94])
-        if ok:
-            written += 1
+    total = len(clip_items)
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {video_path.name}")
+    try:
+        for i, (fidx, mid, reasons) in enumerate(clip_items):
+            if progress_cb:
+                progress_cb(i + 1, total, f"Кадр {i + 1}/{total}")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(fidx))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            if frame.shape[0] != h or frame.shape[1] != w:
+                frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+            inst = _frame_instances(payload, fidx)
+            main_mask = _mask_for_main_id(inst, main_prompt, mid, h, w)
+            if main_mask is not None:
+                frame = _draw_danger_frame(frame, main_mask, reasons)
+            out_jpg = tmp_dir / f"frame_{written:06d}.jpg"
+            if frame.shape[0] != h_enc or frame.shape[1] != w_enc:
+                frame = cv2.resize(frame, (w_enc, h_enc), interpolation=cv2.INTER_LINEAR)
+            ok_write = cv2.imwrite(str(out_jpg), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 94])
+            if ok_write:
+                written += 1
+    finally:
+        cap.release()
     if written <= 0:
         raise RuntimeError("No valid warning frames to encode.")
+    if progress_cb:
+        progress_cb(total, total, "Сборка MP4 (ffmpeg)...")
 
     cmd = [
         "ffmpeg",
@@ -1071,6 +1153,232 @@ def _build_warning_video(
         "fps": float(fps),
         "main_id": int(main_id) if main_id is not None else None,
     }
+
+
+def _analyzer_run_worker(folder: str, main_prompt: str, linked_prompts: list[str]) -> None:
+    try:
+        folder_path, payload, video_path = _load_folder_payload(folder)
+        if video_path is None or not video_path.is_file():
+            raise RuntimeError("video.* not found in folder")
+        h = int(payload.get("height", 0) or 0)
+        w = int(payload.get("width", 0) or 0)
+        if h <= 0 or w <= 0:
+            raise RuntimeError("Invalid width/height in data.json")
+        frames = payload.get("frames")
+        if not isinstance(frames, list):
+            raise RuntimeError("Invalid frames in data.json")
+
+        frame_rows = [fr for fr in frames if isinstance(fr, dict) and int(fr.get("frame", -1)) >= 0]
+        total = len(frame_rows)
+        _task_progress(folder, "analysis", 0, max(1, total), "Подготовка...")
+
+        analysis_dir = folder_path / "analysis"
+        warn_dir = analysis_dir / "warnings"
+        warn_dir.mkdir(parents=True, exist_ok=True)
+        for old in warn_dir.glob("warn_*.jpg"):
+            old.unlink(missing_ok=True)
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path.name}")
+        warnings_out: list[WarningItem] = []
+        frames_checked = 0
+        frames_main_present = 0
+        try:
+            for i, fr in enumerate(frame_rows):
+                _task_progress(folder, "analysis", i, max(1, total), f"Кадр {i + 1}/{total}")
+                fidx = int(fr.get("frame", -1))
+                inst = fr.get("instances")
+                if not isinstance(inst, list):
+                    continue
+                inst2 = [x for x in inst if isinstance(x, dict)]
+                frames_checked += 1
+                main_items = _instance_group_by_label(inst2, main_prompt, h, w)
+                if not main_items:
+                    continue
+                frames_main_present += 1
+                frame_warnings: list[tuple[int, np.ndarray, list[str]]] = []
+
+                for main_id, main_mask in main_items:
+                    local_reasons: list[str] = []
+                    dep_hits: list[list[tuple[int, np.ndarray]]] = []
+
+                    for dep in linked_prompts:
+                        dep_items = _instance_group_by_label(inst2, dep, h, w)
+                        if not dep_items:
+                            local_reasons.append(
+                                f"{main_prompt}_id:{main_id} -> нет {dep} на кадре"
+                            )
+                            dep_hits.append([])
+                            continue
+                        inter = [
+                            (dep_id, dep_mask)
+                            for dep_id, dep_mask in dep_items
+                            if _mask_intersects(main_mask, dep_mask)
+                        ]
+                        dep_hits.append(inter)
+                        if not inter:
+                            local_reasons.append(
+                                f"{main_prompt}_id:{main_id} -> {dep} не пересекается с основным"
+                            )
+
+                    if (
+                        len(linked_prompts) == 2
+                        and len(dep_hits) >= 2
+                        and dep_hits[0]
+                        and dep_hits[1]
+                    ):
+                        ok_pair = False
+                        for _, d1 in dep_hits[0]:
+                            for _, d2 in dep_hits[1]:
+                                if _mask_overlap_ok(d1, d2):
+                                    ok_pair = True
+                                    break
+                            if ok_pair:
+                                break
+                        if not ok_pair:
+                            local_reasons.append(
+                                f"{main_prompt}_id:{main_id} -> "
+                                f"{linked_prompts[0]} и {linked_prompts[1]} не пересекаются"
+                            )
+
+                    if local_reasons:
+                        frame_warnings.append((int(main_id), main_mask, local_reasons))
+
+                if not frame_warnings:
+                    continue
+                cap.set(cv2.CAP_PROP_POS_FRAMES, float(fidx))
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    continue
+                if frame.shape[0] != h or frame.shape[1] != w:
+                    frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+                for mid, main_mask, main_reasons in frame_warnings:
+                    out_img = _draw_danger_frame(frame, main_mask, main_reasons)
+                    out_name = f"warn_{fidx:06d}_human_{mid}.jpg"
+                    out_path = warn_dir / out_name
+                    cv2.imwrite(str(out_path), out_img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                    image_url = f"/storage/folders/{folder}/analysis/warnings/{out_name}"
+                    warnings_out.append(
+                        WarningItem(frame=fidx, main_id=int(mid), reasons=main_reasons, image_url=image_url)
+                    )
+        finally:
+            cap.release()
+
+        summary = {
+            "schema": "samv_mask_analyzer_v1",
+            "folder": folder,
+            "main_prompt": main_prompt,
+            "linked_prompts": linked_prompts,
+            "frames_checked": int(frames_checked),
+            "frames_with_main": int(frames_main_present),
+            "warnings_count": int(len(warnings_out)),
+            "warnings": [
+                {"frame": w.frame, "main_id": w.main_id, "reasons": w.reasons, "image_url": w.image_url}
+                for w in warnings_out
+            ],
+            "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        }
+        (analysis_dir / "analyzer_result.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _task_set(
+            folder,
+            "analysis",
+            status="done",
+            percent=100,
+            done=total,
+            total=total,
+            message="Анализ завершён",
+            result=summary,
+            error="",
+        )
+    except Exception as exc:
+        _task_set(
+            folder,
+            "analysis",
+            status="error",
+            percent=0,
+            message="Ошибка анализа",
+            error=str(exc),
+            result=None,
+        )
+
+
+def _analyzer_video_worker(folder: str, main_id: int | None) -> None:
+    try:
+        folder_path, data_payload, video_path = _load_folder_payload(folder)
+        if video_path is None or not video_path.is_file():
+            raise RuntimeError("video.* not found in folder")
+        result_path = folder_path / "analysis" / "analyzer_result.json"
+        if not result_path.is_file():
+            raise RuntimeError("Run analysis first")
+        analysis_payload = json.loads(result_path.read_text(encoding="utf-8"))
+        if not isinstance(analysis_payload, dict):
+            raise ValueError("Invalid analyzer_result.json")
+        warnings = analysis_payload.get("warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+        main_prompt = str(analysis_payload.get("main_prompt", "") or "").strip()
+        if not main_prompt:
+            raise RuntimeError("main_prompt missing in analyzer_result.json")
+
+        clip_count = 0
+        seen: set[tuple[int, int]] = set()
+        for witem in warnings:
+            if not isinstance(witem, dict):
+                continue
+            if main_id is not None:
+                try:
+                    if int(witem.get("main_id")) != int(main_id):
+                        continue
+                except Exception:
+                    continue
+            try:
+                key = (int(witem.get("frame", -1)), int(witem.get("main_id")))
+            except Exception:
+                continue
+            if key[0] < 0 or key in seen:
+                continue
+            seen.add(key)
+            clip_count += 1
+        total = max(1, clip_count)
+
+        def _progress(done: int, tot: int, msg: str) -> None:
+            _task_progress(folder, "video", done, tot, msg)
+
+        built = _build_warning_video(
+            folder,
+            folder_path,
+            video_path,
+            warnings,
+            data_payload,
+            main_prompt,
+            main_id=main_id,
+            progress_cb=_progress,
+        )
+        _task_set(
+            folder,
+            "video",
+            status="done",
+            percent=100,
+            done=total,
+            total=total,
+            message="Видео готово",
+            result=built,
+            error="",
+        )
+    except Exception as exc:
+        _task_set(
+            folder,
+            "video",
+            status="error",
+            percent=0,
+            message="Ошибка сборки видео",
+            error=str(exc),
+            result=None,
+        )
 
 
 def _folder_row(folder: Path) -> dict[str, object]:
@@ -1707,6 +2015,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/analyzer/result":
             self._analyzer_result(parsed)
             return
+        if path == "/api/analyzer/progress":
+            self._analyzer_progress(parsed)
+            return
         if path == "/api/folders/stats":
             self._folder_stats(parsed)
             return
@@ -2181,6 +2492,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         _json_response(self, {"ok": True, "items": rows})
 
+    def _analyzer_progress(self, parsed) -> None:
+        qs = parse_qs(parsed.query or "")
+        folder = _safe_name((qs.get("folder") or [""])[0])
+        task = str((qs.get("task") or ["analysis"])[0] or "analysis").strip().lower()
+        if task not in ("analysis", "video"):
+            task = "analysis"
+        if not folder:
+            _json_response(self, {"ok": False, "error": "Need folder"}, code=400)
+            return
+        row = _task_get(folder, task)
+        if not row:
+            _json_response(
+                self,
+                {"ok": True, "folder": folder, "task": task, "status": "idle", "percent": 0, "message": ""},
+            )
+            return
+        out = {"ok": True, "folder": folder, "task": task, **row}
+        if row.get("status") == "done" and isinstance(row.get("result"), dict):
+            out.update(row["result"])
+        _json_response(self, out)
+
     def _analyzer_run(self) -> None:
         data = self._read_json_body()
         folder = _safe_name(str(data.get("folder", "") or ""))
@@ -2196,144 +2528,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if s and s != main_prompt and s not in linked_prompts:
                     linked_prompts.append(s)
         linked_prompts = linked_prompts[:2]
+        cur = _task_get(folder, "analysis")
+        if str(cur.get("status", "")) == "running":
+            _json_response(self, {"ok": False, "error": "Analysis already running for this folder"}, code=409)
+            return
         try:
-            folder_path, payload, video_path = _load_folder_payload(folder)
+            _load_folder_payload(folder)
         except Exception as exc:
             _json_response(self, {"ok": False, "error": str(exc)}, code=400)
             return
-        if video_path is None or not video_path.is_file():
-            _json_response(self, {"ok": False, "error": "video.* not found in folder"}, code=400)
-            return
-
-        h = int(payload.get("height", 0) or 0)
-        w = int(payload.get("width", 0) or 0)
-        if h <= 0 or w <= 0:
-            _json_response(self, {"ok": False, "error": "Invalid width/height in data.json"}, code=400)
-            return
-        frames = payload.get("frames")
-        if not isinstance(frames, list):
-            _json_response(self, {"ok": False, "error": "Invalid frames in data.json"}, code=400)
-            return
-
-        analysis_dir = folder_path / "analysis"
-        warn_dir = analysis_dir / "warnings"
-        warn_dir.mkdir(parents=True, exist_ok=True)
-        for old in warn_dir.glob("warn_*.jpg"):
-            old.unlink(missing_ok=True)
-
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            _json_response(self, {"ok": False, "error": f"Cannot open video: {video_path.name}"}, code=500)
-            return
-        warnings_out: list[WarningItem] = []
-        frames_checked = 0
-        frames_main_present = 0
-        try:
-            for fr in frames:
-                if not isinstance(fr, dict):
-                    continue
-                fidx = int(fr.get("frame", -1))
-                if fidx < 0:
-                    continue
-                inst = fr.get("instances")
-                if not isinstance(inst, list):
-                    continue
-                inst2 = [x for x in inst if isinstance(x, dict)]
-                frames_checked += 1
-                main_items = _instance_group_by_label(inst2, main_prompt, h, w)
-                if not main_items:
-                    continue
-                frames_main_present += 1
-                frame_warnings: list[tuple[int, np.ndarray, list[str]]] = []
-
-                # Проверяем каждого main_id отдельно.
-                for main_id, main_mask in main_items:
-                    local_reasons: list[str] = []
-                    dep_hits: list[list[tuple[int, np.ndarray]]] = []
-
-                    for dep in linked_prompts:
-                        dep_items = _instance_group_by_label(inst2, dep, h, w)
-                        if not dep_items:
-                            local_reasons.append(
-                                f"{main_prompt}_id:{main_id} -> нет {dep} на кадре"
-                            )
-                            dep_hits.append([])
-                            continue
-                        inter = [
-                            (dep_id, dep_mask)
-                            for dep_id, dep_mask in dep_items
-                            if _mask_intersects(main_mask, dep_mask)
-                        ]
-                        dep_hits.append(inter)
-                        # Каждый связанный промт обязан входить в маску текущего main_id.
-                        # Иначе это WARNING, даже если второй связанный промт присутствует.
-                        if not inter:
-                            local_reasons.append(
-                                f"{main_prompt}_id:{main_id} -> {dep} не пересекается с основным"
-                            )
-
-                    if (
-                        len(linked_prompts) == 2
-                        and len(dep_hits) >= 2
-                        and dep_hits[0]
-                        and dep_hits[1]
-                    ):
-                        ok_pair = False
-                        for _, d1 in dep_hits[0]:
-                            for _, d2 in dep_hits[1]:
-                                if _mask_overlap_ok(d1, d2):
-                                    ok_pair = True
-                                    break
-                            if ok_pair:
-                                break
-                        if not ok_pair:
-                            local_reasons.append(
-                                f"{main_prompt}_id:{main_id} -> "
-                                f"{linked_prompts[0]} и {linked_prompts[1]} не пересекаются"
-                            )
-
-                    if local_reasons:
-                        frame_warnings.append((int(main_id), main_mask, local_reasons))
-
-                if not frame_warnings:
-                    continue
-                cap.set(cv2.CAP_PROP_POS_FRAMES, float(fidx))
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    continue
-                if frame.shape[0] != h or frame.shape[1] != w:
-                    frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
-                for main_id, main_mask, main_reasons in frame_warnings:
-                    out_img = _draw_danger_crop(frame, main_mask, main_reasons)
-                    out_name = f"warn_{fidx:06d}_human_{main_id}.jpg"
-                    out_path = warn_dir / out_name
-                    cv2.imwrite(str(out_path), out_img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
-                    image_url = f"/storage/folders/{folder}/analysis/warnings/{out_name}"
-                    warnings_out.append(
-                        WarningItem(frame=fidx, main_id=int(main_id), reasons=main_reasons, image_url=image_url)
-                    )
-        finally:
-            cap.release()
-
-        summary = {
-            "schema": "samv_mask_analyzer_v1",
-            "folder": folder,
-            "main_prompt": main_prompt,
-            "linked_prompts": linked_prompts,
-            "frames_checked": int(frames_checked),
-            "frames_with_main": int(frames_main_present),
-            "warnings_count": int(len(warnings_out)),
-            "warnings": [
-                {"frame": w.frame, "main_id": w.main_id, "reasons": w.reasons, "image_url": w.image_url}
-                for w in warnings_out
-            ],
-            "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
-        }
-        (analysis_dir / "analyzer_result.json").write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        _json_response(self, {"ok": True, **summary})
+        _task_set(folder, "analysis", status="running", percent=0, done=0, total=0, message="Старт анализа...")
+        threading.Thread(
+            target=_analyzer_run_worker,
+            args=(folder, main_prompt, linked_prompts),
+            daemon=True,
+        ).start()
+        _json_response(self, {"ok": True, "started": True, "folder": folder, "task": "analysis"})
 
     def _analyzer_video(self) -> None:
         data = self._read_json_body()
@@ -2349,6 +2559,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 _json_response(self, {"ok": False, "error": "main_id must be integer"}, code=400)
                 return
+        cur = _task_get(folder, "video")
+        if str(cur.get("status", "")) == "running":
+            _json_response(self, {"ok": False, "error": "Video build already running for this folder"}, code=409)
+            return
         try:
             folder_path, _, video_path = _load_folder_payload(folder)
         except Exception as exc:
@@ -2361,16 +2575,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not result_path.is_file():
             _json_response(self, {"ok": False, "error": "Run analysis first"}, code=400)
             return
-        try:
-            payload = json.loads(result_path.read_text(encoding="utf-8"))
-            warnings = payload.get("warnings")
-            if not isinstance(warnings, list):
-                warnings = []
-            built = _build_warning_video(folder, folder_path, video_path, warnings, main_id=main_id)
-        except Exception as exc:
-            _json_response(self, {"ok": False, "error": f"Build video failed: {exc}"}, code=500)
-            return
-        _json_response(self, {"ok": True, "folder": folder, **built})
+        _task_set(folder, "video", status="running", percent=0, done=0, total=0, message="Старт сборки видео...")
+        threading.Thread(
+            target=_analyzer_video_worker,
+            args=(folder, main_id),
+            daemon=True,
+        ).start()
+        _json_response(self, {"ok": True, "started": True, "folder": folder, "task": "video", "main_id": main_id})
 
     def _report_generate(self) -> None:
         data = self._read_json_body()

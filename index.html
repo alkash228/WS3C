@@ -7,185 +7,253 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <main class="page">
-    <section class="card tabs">
-      <div class="row">
+  <div class="app">
+    <header class="app-header">
+      <div class="app-brand">
+        <span class="app-logo" aria-hidden="true">SAM</span>
+        <div>
+          <h1 class="app-title">WEB samv</h1>
+          <p class="app-subtitle">Обработка видео, анализ масок и отчёты</p>
+        </div>
+      </div>
+      <nav class="tab-nav" aria-label="Разделы">
         <button type="button" class="tab-btn active" data-tab="main-tab">Работа</button>
         <button type="button" class="tab-btn" data-tab="stats-tab">Статистика</button>
         <button type="button" class="tab-btn" data-tab="inf-tab">Справочник</button>
-      </div>
-    </section>
+      </nav>
+    </header>
 
-    <section id="main-tab" class="tab-pane">
-      <section class="card">
-        <h1>WEB samv</h1>
-        <div class="row">
-          <input id="api-base-input" type="url" placeholder="http://127.0.0.1:8000" />
-          <button id="api-connect-btn" type="button">Подключить</button>
-          <button id="api-check-btn" type="button">Проверить</button>
-        </div>
-        <p id="api-status" class="muted mono"></p>
-        <form id="process-form" class="grid">
-          <label>Промпт
-            <input id="prompt" type="text" placeholder="например: car" required />
-          </label>
-          <label>Видео
-            <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v" required />
-          </label>
-          <label class="inline">
-            <input id="fast-x2" type="checkbox" />
-            D/2 (даунскейл перед инференсом, затем апскейл масок)
-          </label>
-          <label>Делитель даунскейла (D/N)
-            <input id="scale-div" type="number" min="1" step="0.1" value="1" />
-          </label>
-          <label class="inline">
-            <input id="fps-half" type="checkbox" />
-            FPS/2 (прореживание кадров перед инференсом)
-          </label>
-          <label>Делитель FPS (FPS/N)
-            <input id="fps-div" type="number" min="1" step="1" value="1" />
-          </label>
-          <label>Нарезка видео, сек (0 — без нарезки)
-            <input id="video-part-sec" type="number" min="0" step="1" value="0" />
-            <span class="hint">Длинное видео режется на части указанной длины; результаты объединяются в один JSON.</span>
-          </label>
-          <button id="process-btn" type="submit">Обработать видео</button>
-        </form>
-        <div id="status" class="muted"></div>
-      </section>
-
-      <section class="card">
-        <h2>Папки</h2>
-        <button id="refresh-btn" type="button">Обновить</button>
-        <p id="root-hint" class="muted mono"></p>
-        <div id="list"></div>
-      </section>
-
-      <section class="card">
-        <h2>Анализатор JSON (по маскам)</h2>
-        <p class="muted" id="an-folder">Папка не выбрана</p>
-        <div class="grid">
-          <label>Основной промт
-            <select id="main-prompt"></select>
-          </label>
-          <label>Связанный промт #1
-            <select id="linked-prompt-1"></select>
-          </label>
-          <label>Связанный промт #2
-            <select id="linked-prompt-2"></select>
-          </label>
-        </div>
-        <div class="row">
-          <button id="run-analysis-btn" type="button">Запустить анализ</button>
-          <button id="build-video-btn" type="button" disabled>Сделать видео</button>
-        </div>
-        <div id="analysis-status" class="muted"></div>
-        <div id="video-progress" class="progress hidden" aria-hidden="true">
-          <div class="bar"></div>
-        </div>
-        <div id="warnings-list"></div>
-        <div id="report-panel" class="report-panel hidden">
-          <h3>Формирование отчёта</h3>
-          <p class="muted small">Галочка «Включить в отчёт» — у каждого human_id в списке выше. Здесь только формат и кнопка.</p>
-          <p id="report-selection-summary" class="report-selection-summary muted small"></p>
-          <div class="report-formats">
-            <label><input type="checkbox" id="report-fmt-docx" value="docx" checked /> Word (.docx)</label>
-            <label><input type="checkbox" id="report-fmt-html" value="html" checked /> HTML</label>
-            <label><input type="checkbox" id="report-fmt-json" value="json" /> JSON</label>
-            <label><input type="checkbox" id="report-fmt-txt" value="txt" /> TXT</label>
+    <main class="page">
+      <section id="main-tab" class="tab-pane">
+        <section class="card">
+          <header class="card-head">
+            <h2>Подключение API</h2>
+          </header>
+          <div class="api-row">
+            <label class="field-grow">
+              <span class="field-label">Базовый URL</span>
+              <input id="api-base-input" type="url" placeholder="http://127.0.0.1:8000" />
+            </label>
+            <div class="btn-group">
+              <button id="api-connect-btn" type="button" class="btn-primary">Подключить</button>
+              <button id="api-check-btn" type="button" class="btn-secondary">Проверить</button>
+            </div>
           </div>
-          <div class="row">
-            <button id="gen-inline-report-btn" type="button" disabled>Сформировать отчёт</button>
-          </div>
-        </div>
-        <div id="report-status" class="muted"></div>
-        <div id="report-result" class="muted"></div>
-        <div id="warning-video-box" class="hidden">
-          <p class="muted">Видео по warning-кадрам</p>
-          <video id="warning-video" controls preload="metadata"></video>
-        </div>
-      </section>
-    </section>
+          <p id="api-status" class="status-line muted mono"></p>
+        </section>
 
-    <section id="stats-tab" class="tab-pane hidden">
-      <section class="card">
-        <h2>Статистика обработки</h2>
-        <p id="stats-folder-hint" class="muted">Папка не выбрана</p>
-        <div class="row">
-          <button id="stats-refresh-btn" type="button">Обновить статистику</button>
-        </div>
-        <div id="stats-status" class="muted"></div>
-        <div id="stats-table-box" class="stats-box"></div>
-      </section>
-    </section>
+        <section class="card">
+          <header class="card-head">
+            <h2>Обработка видео</h2>
+          </header>
+          <form id="process-form" class="form-grid">
+            <label class="span-2">
+              <span class="field-label">Промпт</span>
+              <input id="prompt" type="text" placeholder="например: car" required />
+            </label>
+            <label class="span-2">
+              <span class="field-label">Видеофайл</span>
+              <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v" required />
+            </label>
+            <label class="check-field span-2">
+              <input id="fast-x2" type="checkbox" />
+              <span>D/2 — даунскейл перед инференсом, затем апскейл масок</span>
+            </label>
+            <label>
+              <span class="field-label">Делитель D/N</span>
+              <input id="scale-div" type="number" min="1" step="0.1" value="1" />
+            </label>
+            <label class="check-field">
+              <input id="fps-half" type="checkbox" />
+              <span>FPS/2 — прореживание кадров</span>
+            </label>
+            <label>
+              <span class="field-label">Делитель FPS/N</span>
+              <input id="fps-div" type="number" min="1" step="1" value="1" />
+            </label>
+            <label class="span-2">
+              <span class="field-label">Нарезка видео, сек (0 — без нарезки)</span>
+              <input id="video-part-sec" type="number" min="0" step="1" value="0" />
+              <span class="hint">Длинное видео режется на части; результаты объединяются в один JSON.</span>
+            </label>
+            <div class="form-actions span-2">
+              <button id="process-btn" type="submit" class="btn-primary btn-lg">Обработать видео</button>
+            </div>
+          </form>
+          <p id="status" class="status-line muted"></p>
+        </section>
 
-    <section id="inf-tab" class="tab-pane hidden">
-      <section class="card inf-page">
-        <header class="inf-page-header">
-          <div>
-            <h2>Справочники</h2>
-            <p class="muted">Здания, подрядчики и договоры подряда для отчётов. Данные хранятся в папке <code>INF/</code> на сервере.</p>
+        <section class="card">
+          <header class="card-head card-head-split">
+            <h2>Папки проектов</h2>
+            <button id="refresh-btn" type="button" class="btn-secondary btn-sm">Обновить</button>
+          </header>
+          <p id="root-hint" class="status-line muted mono"></p>
+          <div id="list" class="list-stack"></div>
+        </section>
+
+        <section class="card card-analyzer">
+          <header class="card-head">
+            <div>
+              <h2>Анализатор JSON</h2>
+              <p class="muted small" id="an-folder">Папка не выбрана</p>
+            </div>
+          </header>
+
+          <div class="prompt-grid">
+            <label>
+              <span class="field-label">Основной промт</span>
+              <select id="main-prompt"></select>
+            </label>
+            <label>
+              <span class="field-label">Связанный промт #1</span>
+              <select id="linked-prompt-1"></select>
+            </label>
+            <label>
+              <span class="field-label">Связанный промт #2</span>
+              <select id="linked-prompt-2"></select>
+            </label>
           </div>
-          <p id="inf-root-hint" class="inf-path mono"></p>
-        </header>
-        <div class="inf-grid">
-          <article class="inf-card" data-kind="buildings">
-            <div class="inf-card-head">
-              <span class="inf-card-icon" aria-hidden="true">🏢</span>
-              <div>
-                <h3>Здания</h3>
-                <span id="inf-buildings-count" class="inf-count">0</span>
+
+          <div class="toolbar">
+            <button id="run-analysis-btn" type="button" class="btn-primary">Запустить анализ</button>
+            <button id="build-video-btn" type="button" class="btn-secondary" disabled>Сделать видео</button>
+          </div>
+
+          <div class="progress-stack">
+            <div id="analysis-progress-wrap" class="progress-wrap hidden" aria-hidden="true">
+              <div class="progress-label">
+                <span id="analysis-progress-text">Анализ…</span>
+                <span id="analysis-progress-pct" class="pct">0%</span>
+              </div>
+              <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="analysis-progress-bar" class="bar"></div>
               </div>
             </div>
-            <label class="inf-list-label">Записи
-              <select id="inf-buildings-list" size="6" class="inf-select"></select>
-            </label>
-            <div class="inf-toolbar">
-              <input id="inf-building-input" type="text" placeholder="Корпус 1" />
-              <button id="inf-building-add" type="button" class="btn-primary">Добавить</button>
-              <button id="inf-building-del" type="button" class="btn-ghost">Удалить</button>
-            </div>
-          </article>
-          <article class="inf-card" data-kind="contractors">
-            <div class="inf-card-head">
-              <span class="inf-card-icon" aria-hidden="true">👷</span>
-              <div>
-                <h3>Подрядчики</h3>
-                <span id="inf-contractors-count" class="inf-count">0</span>
+            <div id="video-progress-wrap" class="progress-wrap hidden" aria-hidden="true">
+              <div class="progress-label">
+                <span id="video-progress-text">Сборка видео…</span>
+                <span id="video-progress-pct" class="pct">0%</span>
+              </div>
+              <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="video-progress-bar" class="bar"></div>
               </div>
             </div>
-            <label class="inf-list-label">Записи
-              <select id="inf-contractors-list" size="6" class="inf-select"></select>
-            </label>
-            <div class="inf-toolbar">
-              <input id="inf-contractor-input" type="text" placeholder="ООО Рога и Копыта" />
-              <button id="inf-contractor-add" type="button" class="btn-primary">Добавить</button>
-              <button id="inf-contractor-del" type="button" class="btn-ghost">Удалить</button>
+          </div>
+
+          <p id="analysis-status" class="status-line muted"></p>
+
+          <div id="warnings-list" class="warnings-stack"></div>
+
+          <div id="report-panel" class="report-panel hidden">
+            <h3>Формирование отчёта</h3>
+            <p class="muted small">Галочка «Включить в отчёт» — у каждого human_id в списке выше.</p>
+            <p id="report-selection-summary" class="report-selection-summary muted small"></p>
+            <div class="report-formats">
+              <label class="chip-check"><input type="checkbox" id="report-fmt-docx" value="docx" checked /> Word</label>
+              <label class="chip-check"><input type="checkbox" id="report-fmt-html" value="html" checked /> HTML</label>
+              <label class="chip-check"><input type="checkbox" id="report-fmt-json" value="json" /> JSON</label>
+              <label class="chip-check"><input type="checkbox" id="report-fmt-txt" value="txt" /> TXT</label>
             </div>
-          </article>
-          <article class="inf-card" data-kind="contracts">
-            <div class="inf-card-head">
-              <span class="inf-card-icon" aria-hidden="true">📄</span>
-              <div>
-                <h3>Договоры подряда</h3>
-                <span id="inf-contracts-count" class="inf-count">0</span>
-              </div>
+            <button id="gen-inline-report-btn" type="button" class="btn-primary" disabled>Сформировать отчёт</button>
+          </div>
+
+          <p id="report-status" class="status-line muted"></p>
+          <div id="report-result"></div>
+
+          <div id="warning-video-box" class="video-block hidden">
+            <h3 class="video-block-title">Сводное видео по warning-кадрам</h3>
+            <div class="video-shell">
+              <video id="warning-video" controls preload="metadata"></video>
             </div>
-            <label class="inf-list-label">Записи
-              <select id="inf-contracts-list" size="6" class="inf-select"></select>
-            </label>
-            <div class="inf-toolbar">
-              <input id="inf-contract-input" type="text" placeholder="Договор подряда №1 от 01.01.2026" />
-              <button id="inf-contract-add" type="button" class="btn-primary">Добавить</button>
-              <button id="inf-contract-del" type="button" class="btn-ghost">Удалить</button>
-            </div>
-          </article>
-        </div>
-        <div id="inf-status" class="inf-status muted"></div>
+          </div>
+        </section>
       </section>
-    </section>
-  </main>
+
+      <section id="stats-tab" class="tab-pane hidden">
+        <section class="card">
+          <header class="card-head card-head-split">
+            <div>
+              <h2>Статистика обработки</h2>
+              <p id="stats-folder-hint" class="muted small">Папка не выбрана</p>
+            </div>
+            <button id="stats-refresh-btn" type="button" class="btn-secondary btn-sm">Обновить</button>
+          </header>
+          <p id="stats-status" class="status-line muted"></p>
+          <div id="stats-table-box" class="table-scroll"></div>
+        </section>
+      </section>
+
+      <section id="inf-tab" class="tab-pane hidden">
+        <section class="card">
+          <header class="inf-page-header">
+            <div>
+              <h2>Справочники</h2>
+              <p class="muted small">Здания, подрядчики и договоры для отчётов (<code>INF/</code> на сервере).</p>
+            </div>
+            <p id="inf-root-hint" class="inf-path mono"></p>
+          </header>
+          <div class="inf-grid">
+            <article class="inf-card" data-kind="buildings">
+              <div class="inf-card-head">
+                <span class="inf-card-icon" aria-hidden="true">🏢</span>
+                <div>
+                  <h3>Здания</h3>
+                  <span id="inf-buildings-count" class="inf-count">0</span>
+                </div>
+              </div>
+              <label class="inf-list-label">
+                <span class="field-label">Записи</span>
+                <select id="inf-buildings-list" size="6" class="inf-select"></select>
+              </label>
+              <div class="inf-toolbar">
+                <input id="inf-building-input" type="text" placeholder="Корпус 1" />
+                <button id="inf-building-add" type="button" class="btn-primary btn-sm">Добавить</button>
+                <button id="inf-building-del" type="button" class="btn-ghost btn-sm">Удалить</button>
+              </div>
+            </article>
+            <article class="inf-card" data-kind="contractors">
+              <div class="inf-card-head">
+                <span class="inf-card-icon" aria-hidden="true">👷</span>
+                <div>
+                  <h3>Подрядчики</h3>
+                  <span id="inf-contractors-count" class="inf-count">0</span>
+                </div>
+              </div>
+              <label class="inf-list-label">
+                <span class="field-label">Записи</span>
+                <select id="inf-contractors-list" size="6" class="inf-select"></select>
+              </label>
+              <div class="inf-toolbar">
+                <input id="inf-contractor-input" type="text" placeholder="ООО Рога и Копыта" />
+                <button id="inf-contractor-add" type="button" class="btn-primary btn-sm">Добавить</button>
+                <button id="inf-contractor-del" type="button" class="btn-ghost btn-sm">Удалить</button>
+              </div>
+            </article>
+            <article class="inf-card" data-kind="contracts">
+              <div class="inf-card-head">
+                <span class="inf-card-icon" aria-hidden="true">📄</span>
+                <div>
+                  <h3>Договоры подряда</h3>
+                  <span id="inf-contracts-count" class="inf-count">0</span>
+                </div>
+              </div>
+              <label class="inf-list-label">
+                <span class="field-label">Записи</span>
+                <select id="inf-contracts-list" size="6" class="inf-select"></select>
+              </label>
+              <div class="inf-toolbar">
+                <input id="inf-contract-input" type="text" placeholder="Договор №1 от 01.01.2026" />
+                <button id="inf-contract-add" type="button" class="btn-primary btn-sm">Добавить</button>
+                <button id="inf-contract-del" type="button" class="btn-ghost btn-sm">Удалить</button>
+              </div>
+            </article>
+          </div>
+          <p id="inf-status" class="status-line inf-status muted"></p>
+        </section>
+      </section>
+    </main>
+  </div>
 
   <script src="./app.js"></script>
 </body>
