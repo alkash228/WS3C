@@ -15,8 +15,8 @@ from samv.analyzer.video_worker import run_video_build
 from samv.api.client import (
     api_health_status,
     effective_api_base,
+    fetch_job_result,
     http_bytes_get,
-    http_json_get,
     merge_chunk_payloads,
     new_folder_name,
     save_processed_outputs,
@@ -365,7 +365,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
                 job_id = start_video_job(send_video_name, send_video_bytes, prompt)
                 job_ids.append(job_id)
                 wait_job_done(job_id)
-                result = http_json_get(f"/jobs/{job_id}/result")
+                result = fetch_job_result(job_id)
 
                 if len(chunks) == 1:
                     save_processed_outputs(

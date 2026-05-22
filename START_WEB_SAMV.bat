@@ -10,6 +10,8 @@ if not defined PY set "PY=py"
 echo Starting WEB_samv...
 echo Python: %PY%
 
+for /d /r samv %%d in (__pycache__) do @if exist "%%d" rd /s /q "%%d" 2>nul
+
 "%PY%" -m pip install -q -r requirements-web.txt
 if errorlevel 1 (
   echo Failed to install Python dependencies. See errors above.

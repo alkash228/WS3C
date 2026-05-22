@@ -407,6 +407,11 @@ def wait_job_done(job_id: str) -> dict:
         time.sleep(max(0.2, POLL_INTERVAL_SEC))
 
 
+def fetch_job_result(job_id: str) -> dict:
+    """Результат job после infer/video."""
+    return http_json_get(f"/jobs/{job_id}/result")
+
+
 def save_processed_outputs(
     folder_name: str,
     result: dict,
