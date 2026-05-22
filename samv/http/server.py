@@ -51,6 +51,7 @@ def main() -> None:
     RUNTIME["lan_ipv4"] = discovered_lan_ipv4()
     RUNTIME["api_port"] = cfg.API_PORT_HINT
     print("--- WEB_samv ---")
+    print("Build: process_upload (fetch_job_result)")
     print(f"Workers: {worker_count()} (WEB_SAMV_WORKERS)")
     print(f"Root: {cfg.ROOT}")
     print(f"Data: {cfg.FOLDERS_ROOT}")
