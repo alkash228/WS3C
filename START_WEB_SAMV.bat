@@ -9,6 +9,11 @@ if not defined PY set "PY=py"
 
 echo Starting WEB_samv...
 echo Python: %PY%
+echo Checking port 8090...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8090" ^| findstr "LISTENING"') do (
+  echo Stopping old process PID %%p on port 8090...
+  taskkill /F /PID %%p >nul 2>nul
+)
 
 for /d /r %%d in (__pycache__) do @if exist "%%d" rd /s /q "%%d" 2>nul
 

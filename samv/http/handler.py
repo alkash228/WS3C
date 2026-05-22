@@ -4,6 +4,7 @@ import base64
 import json
 import shutil
 import threading
+import traceback
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -330,6 +331,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
                 video_part_sec=float(video_part_sec),
             )
         except Exception as exc:
+            traceback.print_exc()
             json_response(self, {"ok": False, "error": f"Process failed: {exc}"}, code=500)
             return
 
