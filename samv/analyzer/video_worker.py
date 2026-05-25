@@ -7,7 +7,7 @@ from samv.tasks import task_progress, task_set
 from samv.video.builder import build_warning_video
 
 
-def run_video_build(folder: str, main_id: int | None) -> None:
+def run_video_build(folder: str, main_id: int | None, colorful_masks: bool = False) -> None:
 
     """Собираем preview mp4 по warnings."""
     try:
@@ -60,6 +60,7 @@ def run_video_build(folder: str, main_id: int | None) -> None:
             data_payload,
             main_prompt,
             main_id=main_id,
+            colorful_masks=colorful_masks,
             progress_cb=progress,
         )
         task_set(

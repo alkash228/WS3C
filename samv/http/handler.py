@@ -4,6 +4,7 @@ import base64
 import json
 import shutil
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -430,7 +431,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
         preview_path = folder_path / "analysis" / "warnings_preview.mp4"
         preview_url = ""
         if preview_path.is_file():
-            preview_url = f"/storage/folders/{folder}/analysis/warnings_preview.mp4?ts={int(time.time())}"
+            preview_url = f"/storage/folders/{folder}/analysis/warnings_preview.mp4?ts={time.time_ns()}"
         json_response(self, {"ok": True, "exists": True, "folder": folder, "preview_video_url": preview_url, **data})
 
     def folder_stats(self, parsed) -> None:
@@ -518,6 +519,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
         if not folder:
             json_response(self, {"ok": False, "error": "Need folder"}, code=400)
             return
+        colorful_masks = bool(data.get("colorful_masks", False))
         raw_main_id = data.get("main_id", None)
         main_id: int | None = None
         if raw_main_id is not None and str(raw_main_id).strip() != "":
@@ -545,10 +547,20 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
         task_set(folder, "video", status="running", percent=0, done=0, total=0, message="Старт сборки видео...")
         threading.Thread(
             target=run_video_build,
-            args=(folder, main_id),
+            args=(folder, main_id, colorful_masks),
             daemon=True,
         ).start()
-        json_response(self, {"ok": True, "started": True, "folder": folder, "task": "video", "main_id": main_id})
+        json_response(
+            self,
+            {
+                "ok": True,
+                "started": True,
+                "folder": folder,
+                "task": "video",
+                "main_id": main_id,
+                "colorful_masks": colorful_masks,
+            },
+        )
 
     def report_generate(self) -> None:
         """Старт генерации отчета."""

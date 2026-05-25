@@ -52,6 +52,7 @@ def build_warning_video(
     payload: dict,
     main_prompt: str,
     main_id: int | None = None,
+    colorful_masks: bool = False,
     progress_cb=None,
 ) -> dict[str, object]:
 
@@ -96,6 +97,7 @@ def build_warning_video(
             h_enc,
             w_enc,
             tmp_dir_str,
+            bool(colorful_masks),
         )
         for seq, (fidx, mid, reasons) in enumerate(clip_items)
     ]
@@ -142,7 +144,7 @@ def build_warning_video(
         raise RuntimeError(f"ffmpeg failed: {err[-600:]}")
 
     return {
-        "video_url": f"/storage/folders/{folder}/analysis/{out_name}?ts={int(time.time())}",
+        "video_url": f"/storage/folders/{folder}/analysis/{out_name}?ts={time.time_ns()}",
         "frames_used": int(written),
         "fps": float(fps),
         "main_id": int(main_id) if main_id is not None else None,

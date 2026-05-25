@@ -1489,3 +1489,141 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+
+/* --- Motion polish v4: smooth + modern --- */
+:root {
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+body::before {
+  animation: ambientFloat 18s var(--ease-out-soft) infinite alternate;
+}
+
+@keyframes ambientFloat {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: saturate(100%);
+  }
+  100% {
+    transform: translate3d(0, -10px, 0) scale(1.02);
+    filter: saturate(112%);
+  }
+}
+
+.tab-btn {
+  position: relative;
+  overflow: hidden;
+  transition: transform 220ms var(--ease-emphasized), background-color 220ms var(--ease-emphasized), color 220ms var(--ease-emphasized), border-color 220ms var(--ease-emphasized), box-shadow 220ms var(--ease-emphasized);
+}
+
+.tab-btn::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  width: 0;
+  height: 2px;
+  transform: translateX(-50%);
+  background: #000;
+  transition: width 220ms var(--ease-emphasized);
+}
+
+.tab-btn:hover {
+  transform: translateY(-1px);
+}
+
+.tab-btn.active::after {
+  width: calc(100% - 18px);
+}
+
+.card,
+.inf-card,
+.warn-card,
+.inline-report,
+.progress-wrap {
+  transition: transform 260ms var(--ease-emphasized), box-shadow 260ms var(--ease-emphasized), background-color 260ms var(--ease-emphasized), border-color 260ms var(--ease-emphasized);
+}
+
+.card:hover,
+.inf-card:hover,
+.warn-card:hover {
+  transform: translateY(-3px);
+}
+
+button {
+  transition: transform 180ms var(--ease-emphasized), box-shadow 220ms var(--ease-emphasized), background-color 220ms var(--ease-emphasized), color 220ms var(--ease-emphasized), border-color 220ms var(--ease-emphasized), filter 220ms var(--ease-emphasized);
+}
+
+button:hover:not(:disabled) {
+  filter: saturate(108%);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px) scale(0.99);
+}
+
+input,
+select,
+textarea {
+  transition: border-color 200ms var(--ease-emphasized), box-shadow 200ms var(--ease-emphasized), background-color 200ms var(--ease-emphasized), transform 200ms var(--ease-emphasized);
+}
+
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: #2a2825;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 3px rgba(255, 225, 106, 0.45);
+}
+
+.tab-pane-enter {
+  animation: paneFadeUp 300ms var(--ease-out-soft) both;
+}
+
+@keyframes paneFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.reveal-item {
+  opacity: 0;
+  transform: translateY(14px) scale(0.995);
+  filter: blur(3px);
+  transition: opacity 520ms var(--ease-out-soft), transform 520ms var(--ease-out-soft), filter 520ms var(--ease-out-soft);
+  transition-delay: calc(var(--reveal-delay, 0) * 70ms);
+}
+
+.reveal-item.is-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  filter: blur(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .reveal-item {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}

@@ -29,6 +29,92 @@ let middleWarningByHumanId = {};
 let warningsByHumanId = {};
 let analysisPrompts = { main: "", linked: [] };
 let detectedViolationsByHumanId = {};
+let builtWarningVideoUrl = "";
+let builtWarningVideoByHumanId = {};
+const WARNING_VIDEO_STATE_PREFIX = "samv.warning_video_state:";
+
+function videoStateStorageKey(folder) {
+  const name = String(folder || "").trim();
+  if (!name) return "";
+  return `${WARNING_VIDEO_STATE_PREFIX}${name}`;
+}
+
+function saveBuiltWarningVideosState() {
+  try {
+    const key = videoStateStorageKey(selectedFolder);
+    if (!key || typeof sessionStorage === "undefined") return;
+    const byHuman = {};
+    Object.entries(builtWarningVideoByHumanId || {}).forEach(([hid, url]) => {
+      const id = String(hid || "").trim();
+      const u = String(url || "").trim();
+      if (id && u) byHuman[id] = u;
+    });
+    sessionStorage.setItem(key, JSON.stringify({
+      global_url: String(builtWarningVideoUrl || "").trim(),
+      by_human: byHuman,
+    }));
+  } catch (_e) {
+    // non-blocking: storage may be unavailable in some browser modes
+  }
+}
+
+function loadBuiltWarningVideosState(folder = selectedFolder) {
+  try {
+    const key = videoStateStorageKey(folder);
+    if (!key || typeof sessionStorage === "undefined") return;
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const globalUrl = String(parsed?.global_url || "").trim();
+    const byHuman = parsed?.by_human && typeof parsed.by_human === "object" ? parsed.by_human : {};
+    builtWarningVideoUrl = globalUrl;
+    builtWarningVideoByHumanId = {};
+    Object.entries(byHuman).forEach(([hid, url]) => {
+      const id = String(hid || "").trim();
+      const u = String(url || "").trim();
+      if (id && u) builtWarningVideoByHumanId[id] = u;
+    });
+  } catch (_e) {
+    // ignore malformed storage payload
+  }
+}
+
+function clearBuiltWarningVideos() {
+  const key = videoStateStorageKey(selectedFolder);
+  builtWarningVideoUrl = "";
+  builtWarningVideoByHumanId = {};
+  try {
+    if (key && typeof sessionStorage !== "undefined") sessionStorage.removeItem(key);
+  } catch (_e) {
+    // ignore storage errors
+  }
+}
+
+function setVideoSrc(vid, url) {
+  if (!vid || !url) return;
+  const next = String(url);
+  const current = String(vid.getAttribute("src") || "");
+  if (current === next) return;
+  vid.src = next;
+  vid.load();
+}
+
+function restoreBuiltWarningVideos() {
+  const box = document.getElementById("warning-video-box");
+  const globalVid = document.getElementById("warning-video");
+  if (builtWarningVideoUrl && globalVid) {
+    setVideoSrc(globalVid, builtWarningVideoUrl);
+    box?.classList.remove("hidden");
+  }
+  Object.entries(builtWarningVideoByHumanId).forEach(([hid, url]) => {
+    const q = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(hid) : hid;
+    const vid = document.querySelector(`.warning-video-one[data-human-id="${q}"]`);
+    const shell = document.querySelector(`[data-video-shell="${q}"]`);
+    if (!vid || !url) return;
+    setVideoSrc(vid, String(url));
+    shell?.classList.remove("hidden");
+  });
+}
 
 function setBuildVideoEnabled(enabled) {
   const btn = document.getElementById("build-video-btn");
@@ -332,8 +418,9 @@ function showWarningVideo(url) {
   const box = document.getElementById("warning-video-box");
   const vid = document.getElementById("warning-video");
   if (!box || !vid || !url) return;
-  vid.src = String(url);
-  vid.load();
+  builtWarningVideoUrl = String(url);
+  saveBuiltWarningVideosState();
+  setVideoSrc(vid, builtWarningVideoUrl);
   seekVideoToMiddle(vid);
   box.classList.remove("hidden");
 }
@@ -422,13 +509,44 @@ function fillRowSelects() {
 function activateTab(tabId) {
   document.querySelectorAll(".tab-pane").forEach((el) => {
     el.classList.toggle("hidden", el.id !== tabId);
+    if (el.id === tabId) {
+      el.classList.remove("tab-pane-enter");
+      void el.offsetWidth;
+      el.classList.add("tab-pane-enter");
+    }
   });
   document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.getAttribute("data-tab") === tabId);
+    const isActive = btn.getAttribute("data-tab") === tabId;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-selected", isActive ? "true" : "false");
   });
   if (tabId === "stats-tab") {
     loadStatsTable();
   }
+  if (tabId === "main-tab") {
+    loadBuiltWarningVideosState();
+    restoreBuiltWarningVideos();
+  }
+}
+
+function applyRevealAnimation() {
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const blocks = Array.from(document.querySelectorAll(".card, .inf-card, .warn-card, .item"));
+  if (!blocks.length) return;
+  blocks.forEach((el, idx) => {
+    el.classList.add("reveal-item");
+    el.style.setProperty("--reveal-delay", String(idx % 8));
+    if (reduced) el.classList.add("is-visible");
+  });
+  if (reduced) return;
+  const io = new IntersectionObserver((entries, obs) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add("is-visible");
+      obs.unobserve(entry.target);
+    });
+  }, { threshold: 0.14, rootMargin: "0px 0px -8% 0px" });
+  blocks.forEach((el) => io.observe(el));
 }
 
 function fmtNum(v, digits = 2) {
@@ -588,11 +706,13 @@ function renderWarnings(items) {
     <p class="warnings-intro muted small">Основной промт: <strong>${mainLbl}</strong> · всего WARNING: <strong>${items.length}</strong></p>
     ${blocks}
   `;
+  applyRevealAnimation();
   fillRowSelects();
   bindHumanReportPickers();
   box.querySelectorAll(".build-one-video-btn").forEach((btn) => {
     btn.addEventListener("click", () => buildVideoForOneHuman(String(btn.getAttribute("data-human-id") || "")));
   });
+  restoreBuiltWarningVideos();
   updateReportSelectionSummary();
   updateReportPanel();
 }
@@ -616,6 +736,7 @@ function fillInfSelects() {
   updateInfCounts();
   fillRowSelects();
   setReportEnabled();
+  applyRevealAnimation();
 }
 
 async function loadInfOptions() {
@@ -715,8 +836,10 @@ async function loadPromptsForFolder(folder) {
     setBuildVideoEnabled(false);
     setReportEnabled();
     resetWarningVideo();
+    clearBuiltWarningVideos();
     return;
   }
+  loadBuiltWarningVideosState(folder);
   anFolder.textContent = `Папка: ${folder}`;
   const res = await apiGet(`/api/analyzer/prompts?folder=${encodeURIComponent(folder)}`);
   if (!res.ok) {
@@ -782,6 +905,7 @@ async function refreshList() {
     setBuildVideoEnabled(false);
     setReportEnabled();
     resetWarningVideo();
+    clearBuiltWarningVideos();
     await loadPromptsForFolder("");
     return;
   }
@@ -801,6 +925,7 @@ async function refreshList() {
       </div>
     </article>
   `).join("");
+  applyRevealAnimation();
   box.querySelectorAll("button[data-del]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const name = btn.getAttribute("data-del");
@@ -820,6 +945,7 @@ async function refreshList() {
       setBuildVideoEnabled(false);
       setReportEnabled();
       resetWarningVideo();
+      clearBuiltWarningVideos();
       await loadPromptsForFolder(selectedFolder);
       await loadStatsTable();
     });
@@ -831,6 +957,7 @@ async function refreshList() {
     setBuildVideoEnabled(false);
     setReportEnabled();
     resetWarningVideo();
+    clearBuiltWarningVideos();
     await loadPromptsForFolder(selectedFolder);
     await loadStatsTable();
   }
@@ -955,6 +1082,7 @@ document.getElementById("run-analysis-btn").addEventListener("click", async () =
   status.textContent = "Анализ по маскам...";
   setBuildVideoEnabled(false);
   resetWarningVideo();
+  clearBuiltWarningVideos();
   hideVideoProgress();
   setProgressUi("analysis-progress-wrap", "analysis-progress-bar", "analysis-progress-text", "analysis-progress-pct", true, 0, "Запуск анализа…");
   if (btn) btn.disabled = true;
@@ -1001,9 +1129,11 @@ async function runVideoBuild(mainId) {
   const status = document.getElementById("analysis-status");
   const box = document.getElementById("warning-video-box");
   const vid = document.getElementById("warning-video");
+  const colorfulMasks = !!document.getElementById("video-color-masks")?.checked;
   const isGlobal = mainId === undefined || mainId === null;
   const body = { folder: selectedFolder };
   if (!isGlobal) body.main_id = Number(mainId);
+  body.colorful_masks = colorfulMasks;
   hideAnalysisProgress();
   setProgressUi("video-progress-wrap", "video-progress-bar", "video-progress-text", "video-progress-pct", true, 0, "Запуск сборки видео…");
   if (isGlobal) box?.classList.add("hidden");
@@ -1022,8 +1152,9 @@ async function runVideoBuild(mainId) {
     if (status) status.textContent = message || `Сборка видео… ${percent}%`;
   });
   if (vid && isGlobal) {
-    vid.src = String(out.video_url || "");
-    vid.load();
+    builtWarningVideoUrl = String(out.video_url || "");
+    saveBuiltWarningVideosState();
+    setVideoSrc(vid, builtWarningVideoUrl);
     box?.classList.remove("hidden");
   }
   return out;
@@ -1156,8 +1287,9 @@ async function buildVideoForOneHuman(humanId) {
   try {
     const out = await runVideoBuild(Number(hid));
     if (vid) {
-      vid.src = String(out.video_url || "");
-      vid.load();
+      builtWarningVideoByHumanId[hid] = String(out.video_url || "");
+      saveBuiltWarningVideosState();
+      setVideoSrc(vid, builtWarningVideoByHumanId[hid]);
       seekVideoToMiddle(vid);
       shell?.classList.remove("hidden");
     }
@@ -1200,8 +1332,13 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => activateTab(btn.getAttribute("data-tab") || "main-tab"));
 });
 
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) restoreBuiltWarningVideos();
+});
+
 (async () => {
   await refreshApiStatus();
   await loadInfOptions();
   await refreshList();
+  applyRevealAnimation();
 })();
