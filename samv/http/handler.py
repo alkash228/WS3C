@@ -60,45 +60,48 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """GET запросы."""
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/")
-        if path == "/__web_samv_hint.json":
-            json_response(
-                self,
-                {
-                    "ok": True,
-                    "web_port": int(RUNTIME.get("web_port", PORT)),
-                    "api_port": int(RUNTIME.get("api_port", API_PORT_HINT)),
-                    "lan_ipv4": list(RUNTIME.get("lan_ipv4", [])),
-                },
-            )
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/")
+            if path == "/__web_samv_hint.json":
+                json_response(
+                    self,
+                    {
+                        "ok": True,
+                        "web_port": int(RUNTIME.get("web_port", PORT)),
+                        "api_port": int(RUNTIME.get("api_port", API_PORT_HINT)),
+                        "lan_ipv4": list(RUNTIME.get("lan_ipv4", [])),
+                    },
+                )
+                return
+            if path == "/api/folders":
+                json_response(self, {"ok": True, "root": str(FOLDERS_ROOT), "items": list_folders()})
+                return
+            if path == "/api/status":
+                st = api_health_status()
+                json_response(self, {"ok": True, **st})
+                return
+            if path == "/api/analyzer/prompts":
+                self.analyzer_prompts(parsed)
+                return
+            if path == "/api/analyzer/result":
+                self.analyzer_result(parsed)
+                return
+            if path == "/api/analyzer/progress":
+                self.analyzer_progress(parsed)
+                return
+            if path == "/api/folders/stats":
+                self.folder_stats(parsed)
+                return
+            if path == "/api/folders/stats_all":
+                self.folders_stats_all()
+                return
+            if path == "/api/inf/options":
+                self.inf_options_route()
+                return
+            return super().do_GET()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
-        if path == "/api/folders":
-            json_response(self, {"ok": True, "root": str(FOLDERS_ROOT), "items": list_folders()})
-            return
-        if path == "/api/status":
-            st = api_health_status()
-            json_response(self, {"ok": True, **st})
-            return
-        if path == "/api/analyzer/prompts":
-            self.analyzer_prompts(parsed)
-            return
-        if path == "/api/analyzer/result":
-            self.analyzer_result(parsed)
-            return
-        if path == "/api/analyzer/progress":
-            self.analyzer_progress(parsed)
-            return
-        if path == "/api/folders/stats":
-            self.folder_stats(parsed)
-            return
-        if path == "/api/folders/stats_all":
-            self.folders_stats_all()
-            return
-        if path == "/api/inf/options":
-            self.inf_options_route()
-            return
-        return super().do_GET()
 
     def do_POST(self) -> None:
         """POST запросы."""
