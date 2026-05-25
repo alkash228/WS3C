@@ -34,7 +34,7 @@ from samv.inf.catalog import (
 )
 from samv.masks.core import all_prompts
 from samv.reports.build import generate_report, norm_report_formats, norm_report_items
-from samv.storage.folders import folder_paths, list_folders, load_folder_payload
+from samv.storage.folders import folder_paths, invalidate_folders_cache, list_folders, load_folder_payload
 from samv.storage.folders import processing_stats_all_folders, processing_stats_for_folder
 from samv.tasks import task_get, task_set
 from samv.http.multipart import field_storage_from_request
@@ -167,6 +167,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             return
         folder, _, _ = folder_paths(name)
         folder.mkdir(parents=True, exist_ok=True)
+        invalidate_folders_cache()
         json_response(self, {"ok": True, "folder": name, "items": list_folders()})
 
     def delete_folder(self) -> None:
@@ -182,6 +183,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             json_response(self, {"ok": False, "error": "Folder not found"}, code=404)
             return
         shutil.rmtree(folder)
+        invalidate_folders_cache()
         json_response(self, {"ok": True, "items": list_folders()})
 
     def upload_to_folder(self) -> None:
@@ -232,7 +234,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
                 json_response(self, {"ok": False, "error": f"Invalid JSON: {exc}"}, code=400)
                 return
             json_path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8")
-
+        invalidate_folders_cache()
         json_response(self, {"ok": True, "folder": folder_name, "items": list_folders()})
 
     def save_processed_result(self) -> None:
@@ -270,7 +272,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
                 if p.is_file() and p.stem == "video" and p.suffix.lower() in VIDEO_EXTS:
                     p.unlink(missing_ok=True)
             (folder / f"video{ext}").write_bytes(raw)
-
+        invalidate_folders_cache()
         json_response(self, {"ok": True, "folder": folder_name, "items": list_folders()})
 
     def process_video(self) -> None:
@@ -338,7 +340,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             traceback.print_exc()
             json_response(self, {"ok": False, "error": f"Process failed: {exc}"}, code=500)
             return
-
+        invalidate_folders_cache()
         json_response(self, {"ok": True, "items": list_folders(), **out})
 
     def set_status_api_base(self) -> None:
@@ -433,9 +435,31 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             return
         preview_path = folder_path / "analysis" / "warnings_preview.mp4"
         preview_url = ""
+        human_video_urls: dict[str, str] = {}
+        ts = time.time_ns()
         if preview_path.is_file():
-            preview_url = f"/storage/folders/{folder}/analysis/warnings_preview.mp4?ts={time.time_ns()}"
-        json_response(self, {"ok": True, "exists": True, "folder": folder, "preview_video_url": preview_url, **data})
+            preview_url = f"/storage/folders/{folder}/analysis/warnings_preview.mp4?ts={ts}"
+        analysis_dir = folder_path / "analysis"
+        if analysis_dir.is_dir():
+            for p in analysis_dir.glob("warnings_preview_human_*.mp4"):
+                stem = str(p.stem or "")
+                if not stem.startswith("warnings_preview_human_"):
+                    continue
+                hid = stem.replace("warnings_preview_human_", "", 1).strip()
+                if not hid:
+                    continue
+                human_video_urls[hid] = f"/storage/folders/{folder}/analysis/{p.name}?ts={ts}"
+        json_response(
+            self,
+            {
+                "ok": True,
+                "exists": True,
+                "folder": folder,
+                "preview_video_url": preview_url,
+                "human_video_urls": human_video_urls,
+                **data,
+            },
+        )
 
     def folder_stats(self, parsed) -> None:
         """Статистика одной папки."""

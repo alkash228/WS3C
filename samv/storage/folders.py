@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
 from pathlib import Path
 
 from samv.config import FOLDERS_ROOT, VIDEO_EXTS
 from samv.inf.catalog import ensure_inf_dirs
 from samv.utils import safe_name
 from samv.video.io import find_video
+
+_FOLDER_ROWS_CACHE_TTL_SEC = 2.0
+_FOLDER_ROWS_CACHE_TS = 0.0
+_FOLDER_ROWS_CACHE: list[dict[str, object]] = []
 
 
 def folder_paths(folder_name: str) -> tuple[Path, Path, Path]:
@@ -21,6 +26,14 @@ def find_video_any(folder: Path) -> Path | None:
 
     """Ищем video.* в папке."""
     return find_video(folder)
+
+
+def invalidate_folders_cache() -> None:
+
+    """Сброс кеша списка папок."""
+    global _FOLDER_ROWS_CACHE_TS, _FOLDER_ROWS_CACHE
+    _FOLDER_ROWS_CACHE_TS = 0.0
+    _FOLDER_ROWS_CACHE = []
 
 
 def load_folder_payload(folder_name: str) -> tuple[Path, dict, Path | None]:
@@ -66,7 +79,11 @@ def folder_row(folder: Path, *, json_exists: bool | None = None, video_path: Pat
 def list_folders() -> list[dict[str, object]]:
 
     """Все папки для главной."""
+    global _FOLDER_ROWS_CACHE_TS, _FOLDER_ROWS_CACHE
     ensure_inf_dirs()
+    now = time.monotonic()
+    if _FOLDER_ROWS_CACHE and (now - _FOLDER_ROWS_CACHE_TS) <= _FOLDER_ROWS_CACHE_TTL_SEC:
+        return [dict(row) for row in _FOLDER_ROWS_CACHE]
     rows: list[dict[str, object]] = []
     for p in FOLDERS_ROOT.iterdir():
         if not p.is_dir():
@@ -79,6 +96,8 @@ def list_folders() -> list[dict[str, object]]:
             continue
         rows.append(folder_row(p, json_exists=has_json, video_path=video_path))
     rows.sort(key=lambda x: str(x.get("updated_at", "")), reverse=True)
+    _FOLDER_ROWS_CACHE = [dict(row) for row in rows]
+    _FOLDER_ROWS_CACHE_TS = now
     return rows
 
 

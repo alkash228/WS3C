@@ -39,20 +39,70 @@ function videoStateStorageKey(folder) {
   return `${WARNING_VIDEO_STATE_PREFIX}${name}`;
 }
 
+function writeVideoState(key, payload) {
+  if (!key) return;
+  const raw = JSON.stringify(payload || {});
+  try {
+    if (typeof sessionStorage !== "undefined") sessionStorage.setItem(key, raw);
+  } catch (_e) {
+    // ignore storage errors
+  }
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(key, raw);
+  } catch (_e) {
+    // ignore storage errors
+  }
+}
+
+function readVideoState(key) {
+  if (!key) return "";
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      const raw = sessionStorage.getItem(key);
+      if (raw) return raw;
+    }
+  } catch (_e) {
+    // ignore storage errors
+  }
+  try {
+    if (typeof localStorage !== "undefined") {
+      const raw = localStorage.getItem(key);
+      if (raw) return raw;
+    }
+  } catch (_e) {
+    // ignore storage errors
+  }
+  return "";
+}
+
+function removeVideoState(key) {
+  if (!key) return;
+  try {
+    if (typeof sessionStorage !== "undefined") sessionStorage.removeItem(key);
+  } catch (_e) {
+    // ignore storage errors
+  }
+  try {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(key);
+  } catch (_e) {
+    // ignore storage errors
+  }
+}
+
 function saveBuiltWarningVideosState() {
   try {
     const key = videoStateStorageKey(selectedFolder);
-    if (!key || typeof sessionStorage === "undefined") return;
+    if (!key) return;
     const byHuman = {};
     Object.entries(builtWarningVideoByHumanId || {}).forEach(([hid, url]) => {
       const id = String(hid || "").trim();
       const u = String(url || "").trim();
       if (id && u) byHuman[id] = u;
     });
-    sessionStorage.setItem(key, JSON.stringify({
+    writeVideoState(key, {
       global_url: String(builtWarningVideoUrl || "").trim(),
       by_human: byHuman,
-    }));
+    });
   } catch (_e) {
     // non-blocking: storage may be unavailable in some browser modes
   }
@@ -61,40 +111,40 @@ function saveBuiltWarningVideosState() {
 function loadBuiltWarningVideosState(folder = selectedFolder) {
   try {
     const key = videoStateStorageKey(folder);
-    if (!key || typeof sessionStorage === "undefined") return;
-    const raw = sessionStorage.getItem(key);
+    if (!key) return;
+    const raw = readVideoState(key);
     if (!raw) return;
     const parsed = JSON.parse(raw);
     const globalUrl = String(parsed?.global_url || "").trim();
     const byHuman = parsed?.by_human && typeof parsed.by_human === "object" ? parsed.by_human : {};
-    builtWarningVideoUrl = globalUrl;
-    builtWarningVideoByHumanId = {};
+    if (globalUrl) builtWarningVideoUrl = globalUrl;
+    const mergedByHuman = { ...(builtWarningVideoByHumanId || {}) };
     Object.entries(byHuman).forEach(([hid, url]) => {
       const id = String(hid || "").trim();
       const u = String(url || "").trim();
-      if (id && u) builtWarningVideoByHumanId[id] = u;
+      if (id && u) mergedByHuman[id] = u;
     });
+    builtWarningVideoByHumanId = mergedByHuman;
   } catch (_e) {
     // ignore malformed storage payload
   }
 }
 
-function clearBuiltWarningVideos() {
+function clearBuiltWarningVideos(removeStored = false) {
   const key = videoStateStorageKey(selectedFolder);
   builtWarningVideoUrl = "";
   builtWarningVideoByHumanId = {};
-  try {
-    if (key && typeof sessionStorage !== "undefined") sessionStorage.removeItem(key);
-  } catch (_e) {
-    // ignore storage errors
-  }
+  if (removeStored) removeVideoState(key);
 }
 
-function setVideoSrc(vid, url) {
+function setVideoSrc(vid, url, forceReload = false) {
   if (!vid || !url) return;
   const next = String(url);
   const current = String(vid.getAttribute("src") || "");
-  if (current === next) return;
+  if (current === next) {
+    if (forceReload) vid.load();
+    return;
+  }
   vid.src = next;
   vid.load();
 }
@@ -103,7 +153,7 @@ function restoreBuiltWarningVideos() {
   const box = document.getElementById("warning-video-box");
   const globalVid = document.getElementById("warning-video");
   if (builtWarningVideoUrl && globalVid) {
-    setVideoSrc(globalVid, builtWarningVideoUrl);
+    setVideoSrc(globalVid, builtWarningVideoUrl, true);
     box?.classList.remove("hidden");
   }
   Object.entries(builtWarningVideoByHumanId).forEach(([hid, url]) => {
@@ -111,8 +161,16 @@ function restoreBuiltWarningVideos() {
     const vid = document.querySelector(`.warning-video-one[data-human-id="${q}"]`);
     const shell = document.querySelector(`[data-video-shell="${q}"]`);
     if (!vid || !url) return;
-    setVideoSrc(vid, String(url));
+    setVideoSrc(vid, String(url), true);
     shell?.classList.remove("hidden");
+  });
+}
+
+function restoreBuiltWarningVideosDeferred() {
+  restoreBuiltWarningVideos();
+  // Вкладки/карточки могут дорисовываться чуть позже; повторяем восстановление.
+  [120, 350, 800].forEach((delayMs) => {
+    setTimeout(() => restoreBuiltWarningVideos(), delayMs);
   });
 }
 
@@ -525,7 +583,7 @@ function activateTab(tabId) {
   }
   if (tabId === "main-tab") {
     loadBuiltWarningVideosState();
-    restoreBuiltWarningVideos();
+    restoreBuiltWarningVideosDeferred();
   }
 }
 
@@ -712,7 +770,7 @@ function renderWarnings(items) {
   box.querySelectorAll(".build-one-video-btn").forEach((btn) => {
     btn.addEventListener("click", () => buildVideoForOneHuman(String(btn.getAttribute("data-human-id") || "")));
   });
-  restoreBuiltWarningVideos();
+  restoreBuiltWarningVideosDeferred();
   updateReportSelectionSummary();
   updateReportPanel();
 }
@@ -879,6 +937,14 @@ async function loadSavedAnalysis(folder) {
       main: String(out.main_prompt || "").trim(),
       linked: Array.isArray(out.linked_prompts) ? out.linked_prompts.map((x) => String(x || "").trim()).filter(Boolean) : [],
     };
+    if (out.human_video_urls && typeof out.human_video_urls === "object") {
+      Object.entries(out.human_video_urls).forEach(([hid, url]) => {
+        const id = String(hid || "").trim();
+        const u = String(url || "").trim();
+        if (id && u) builtWarningVideoByHumanId[id] = u;
+      });
+      saveBuiltWarningVideosState();
+    }
     renderWarnings(warnings);
     status.textContent = `Загружен сохраненный анализ. Проверено: ${Number(out.frames_checked || 0)}, WARNING: ${Number(out.warnings_count || 0)}`;
     if (out.preview_video_url) showWarningVideo(out.preview_video_url);
@@ -1082,7 +1148,7 @@ document.getElementById("run-analysis-btn").addEventListener("click", async () =
   status.textContent = "Анализ по маскам...";
   setBuildVideoEnabled(false);
   resetWarningVideo();
-  clearBuiltWarningVideos();
+  clearBuiltWarningVideos(true);
   hideVideoProgress();
   setProgressUi("analysis-progress-wrap", "analysis-progress-bar", "analysis-progress-text", "analysis-progress-pct", true, 0, "Запуск анализа…");
   if (btn) btn.disabled = true;
@@ -1333,7 +1399,10 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) restoreBuiltWarningVideos();
+  if (!document.hidden) {
+    loadBuiltWarningVideosState();
+    restoreBuiltWarningVideosDeferred();
+  }
 });
 
 (async () => {
