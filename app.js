@@ -1337,7 +1337,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 (async () => {
-  await refreshApiStatus();
+  refreshApiStatus();
   await loadInfOptions();
   await refreshList();
   applyRevealAnimation();

@@ -94,7 +94,13 @@ def api_health_status() -> dict[str, object]:
     """Жив ли бэкенд SAM3."""
     base = effective_api_base()
     try:
-        j = http_json_get("/health")
+        # Health-check must stay responsive; long timeouts freeze UI startup.
+        req = Request(join_api("/health"), method="GET")
+        with urlopen(req, timeout=3) as resp:
+            raw = resp.read()
+        j = json.loads(raw.decode("utf-8"))
+        if not isinstance(j, dict):
+            j = {}
         ok = str(j.get("status", "")).lower() == "ok"
         return {"ok": ok, "api_base": base, "raw": j}
     except Exception as exc:
