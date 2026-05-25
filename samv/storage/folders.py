@@ -41,13 +41,15 @@ def load_folder_payload(folder_name: str) -> tuple[Path, dict, Path | None]:
     return folder, payload, find_video_any(folder)
 
 
-def folder_row(folder: Path) -> dict[str, object]:
+def folder_row(folder: Path, *, json_exists: bool | None = None, video_path: Path | None = None) -> dict[str, object]:
 
     """Строка для списка папок в UI."""
     json_path = folder / "data.json"
-    video_path = find_video_any(folder)
+    has_json = bool(json_exists) if json_exists is not None else json_path.is_file()
+    if video_path is None:
+        video_path = find_video_any(folder)
     mtime = folder.stat().st_mtime
-    if json_path.is_file():
+    if has_json:
         mtime = max(mtime, json_path.stat().st_mtime)
     if video_path and video_path.is_file():
         mtime = max(mtime, video_path.stat().st_mtime)
@@ -56,7 +58,7 @@ def folder_row(folder: Path) -> dict[str, object]:
         "name": folder.name,
         "has_video": bool(video_path and video_path.is_file()),
         "video_name": video_path.name if video_path else "",
-        "has_json": json_path.is_file(),
+        "has_json": has_json,
         "updated_at": dt.datetime.fromtimestamp(mtime).isoformat(timespec="seconds"),
     }
 
@@ -67,8 +69,15 @@ def list_folders() -> list[dict[str, object]]:
     ensure_inf_dirs()
     rows: list[dict[str, object]] = []
     for p in FOLDERS_ROOT.iterdir():
-        if p.is_dir():
-            rows.append(folder_row(p))
+        if not p.is_dir():
+            continue
+        json_path = p / "data.json"
+        has_json = json_path.is_file()
+        video_path = find_video_any(p)
+        # Показываем только проектные папки, чтобы не тратить время на внутренние служебные каталоги.
+        if not has_json and (video_path is None or not video_path.is_file()):
+            continue
+        rows.append(folder_row(p, json_exists=has_json, video_path=video_path))
     rows.sort(key=lambda x: str(x.get("updated_at", "")), reverse=True)
     return rows
 
