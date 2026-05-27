@@ -1,0 +1,2 @@
+# Точка входа для pip: те же зависимости, что и requirements-web.txt
+-r requirements-web.txt

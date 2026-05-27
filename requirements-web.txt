@@ -1,6 +1,11 @@
-numpy>=1.24
-opencv-python>=4.8
-python-docx>=1.1.0
+# WEB_samv — Python-зависимости (pip install -r requirements-web.txt)
+# Системно: FFmpeg (ffmpeg/ffprobe) в PATH — видео, нарезка, сборка warning-роликов.
 
-# Note: ffmpeg/ffprobe are required system binaries (not pip packages).
-# Install FFmpeg separately and ensure it is available in PATH.
+# Маски, кадры, анализатор
+numpy>=1.24,<3
+opencv-python>=4.8.0
+
+# Отчёты DOCX (+ встраивание JPEG в Word)
+python-docx>=1.1.0
+lxml>=4.9.0
+Pillow>=10.0.0
