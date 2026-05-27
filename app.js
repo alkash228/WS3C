@@ -1,9 +1,40 @@
+const DEBUG_LOG_MAX = 500;
+let debugLogLines = [];
+
+function debugLog(level, message) {
+  const ts = new Date().toLocaleTimeString("ru-RU", { hour12: false });
+  const line = `[${ts}] [${String(level || "info").toUpperCase()}] ${String(message || "")}`;
+  debugLogLines.push(line);
+  if (debugLogLines.length > DEBUG_LOG_MAX) {
+    debugLogLines = debugLogLines.slice(-DEBUG_LOG_MAX);
+  }
+  const el = document.getElementById("debug-log");
+  if (el) {
+    el.textContent = debugLogLines.join("\n");
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+function debugLogServer(lines) {
+  (Array.isArray(lines) ? lines : []).forEach((x) => debugLog("srv", x));
+}
+
+function clearDebugLog() {
+  debugLogLines = [];
+  const el = document.getElementById("debug-log");
+  if (el) el.textContent = "";
+}
+
 async function apiGet(url) {
+  debugLog("api", `GET ${url}`);
   const r = await fetch(url, { cache: "no-store" });
-  return r.json();
+  const data = await r.json();
+  debugLog("api", `GET ${url} → ok=${!!data.ok}${data.error ? ` err=${data.error}` : ""}`);
+  return data;
 }
 
 async function apiPost(url, body, isForm = false) {
+  debugLog("api", `POST ${url}${isForm ? " (multipart)" : ""}`);
   const init = { method: "POST" };
   if (isForm) {
     init.body = body;
@@ -12,7 +43,23 @@ async function apiPost(url, body, isForm = false) {
     init.body = JSON.stringify(body || {});
   }
   const r = await fetch(url, init);
-  return r.json();
+  const data = await r.json();
+  debugLog("api", `POST ${url} → ok=${!!data.ok}${data.error ? ` err=${data.error}` : ""}`);
+  return data;
+}
+
+function parsePromptSegments(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  return s.split(/\s*[.,]\s*/).map((x) => x.trim()).filter(Boolean);
+}
+
+function promptToAnalyzer(prompt) {
+  const segments = parsePromptSegments(prompt);
+  if (!segments.length) return { main: "", linked: [] };
+  const main = segments[0];
+  const linked = segments.slice(1).filter((x) => x && x !== main);
+  return { main, linked };
 }
 
 function esc(s) {
@@ -24,6 +71,9 @@ function esc(s) {
 let selectedFolder = "";
 let lastWarnings = [];
 let infOptions = { buildings: [], contractors: [], contracts: [] };
+let infScenarios = { scenarios: [], enabled_ids: [], active_id: "" };
+let folderAnalyzerParams = { main: "", linked: [], prompt: "", violation_label: "", api_prompt: "" };
+let apiPromptText = "";
 let currentMiddleWarning = null;
 let middleWarningByHumanId = {};
 let warningsByHumanId = {};
@@ -179,6 +229,68 @@ function setBuildVideoEnabled(enabled) {
   if (btn) btn.disabled = !enabled;
 }
 
+function setRunAnalysisEnabled(enabled) {
+  const btn = document.getElementById("run-analysis-btn");
+  if (btn) btn.disabled = !enabled;
+}
+
+async function syncRunAnalysisButton(folder = selectedFolder) {
+  if (!folder) {
+    setRunAnalysisEnabled(false);
+    return;
+  }
+  const res = await apiGet("/api/folders");
+  if (!res.ok) {
+    setRunAnalysisEnabled(false);
+    return;
+  }
+  const row = (Array.isArray(res.items) ? res.items : []).find((x) => String(x.name) === String(folder));
+  setRunAnalysisEnabled(!!row?.has_json);
+}
+
+async function runFolderAnalysis() {
+  if (!selectedFolder) {
+    alert("Сначала выберите папку в списке.");
+    return;
+  }
+  if (!getEnabledScenarios().length) {
+    alert("Нет включённых сценариев анализатора. Отметьте на вкладке «Справочник».");
+    return;
+  }
+  const btn = document.getElementById("run-analysis-btn");
+  const status = document.getElementById("analysis-status");
+  debugLog("analysis", `Старт анализа папки: ${selectedFolder}`);
+  if (btn) btn.disabled = true;
+  hideVideoProgress();
+  setProgressUi(
+    "analysis-progress-wrap",
+    "analysis-progress-bar",
+    "analysis-progress-text",
+    "analysis-progress-pct",
+    true,
+    0,
+    "Запуск анализа…",
+  );
+  if (status) status.textContent = "Анализ запущен…";
+  const started = await apiPost("/api/analyzer/run_all", { folder: selectedFolder });
+  if (!started.ok) {
+    if (status) status.textContent = `Ошибка: ${started.error || "unknown"}`;
+    debugLog("err", started.error || "analysis start failed");
+    await syncRunAnalysisButton();
+    return;
+  }
+  try {
+    clearBuiltWarningVideos(true);
+    resetWarningVideo();
+    await pollAnalysisAndShow(selectedFolder);
+  } catch (err) {
+    if (status) status.textContent = `Ошибка анализа: ${err?.message || err}`;
+    debugLog("err", String(err?.message || err));
+  } finally {
+    await syncRunAnalysisButton();
+  }
+}
+
 function setProgressUi(wrapId, barId, textId, pctId, visible, percent, message) {
   const wrap = document.getElementById(wrapId);
   const bar = document.getElementById(barId);
@@ -252,12 +364,10 @@ function contractFieldMarkup() {
 }
 
 function getCurrentPrompts() {
-  const main = String(document.getElementById("main-prompt")?.value || "").trim();
-  const p1 = String(document.getElementById("linked-prompt-1")?.value || "").trim();
-  const p2 = String(document.getElementById("linked-prompt-2")?.value || "").trim();
-  const linked = [];
-  if (p1 && p1 !== main) linked.push(p1);
-  if (p2 && p2 !== main && p2 !== p1) linked.push(p2);
+  const main = String(analysisPrompts.main || folderAnalyzerParams.main || "").trim();
+  const linked = Array.isArray(analysisPrompts.linked) && analysisPrompts.linked.length
+    ? analysisPrompts.linked.map((x) => String(x || "").trim()).filter(Boolean)
+    : (folderAnalyzerParams.linked || []).slice();
   return { main, linked };
 }
 
@@ -266,37 +376,94 @@ function violKey(text) {
   return encodeURIComponent(String(text || "").trim());
 }
 
-function formatDefectLabel(text, hid) {
+/** Текст нарушения из строки сценария INF (как scenario_violation_label на бэкенде). */
+function scenarioViolationLabelFromRow(row) {
+  if (!row || typeof row !== "object") return "";
+  const custom = String(row.violation_label || "").trim();
+  if (custom) return custom;
+  const title = String(row.title || "").trim();
+  if (title) return title;
+  const prompt = String(row.prompt || "").trim();
+  if (!prompt) return "";
+  const parts = prompt.split(/\s*\.\s*/).map((x) => x.trim()).filter(Boolean);
+  const linked = parts.slice(1);
+  if (linked.length) {
+    const last = linked[linked.length - 1];
+    if (last) return `Отсутствует «${last}» (СИЗ)`;
+  }
+  return "Нарушение требований ТБ";
+}
+
+function scenarioViolationLabelById(scenarioId) {
+  const id = String(scenarioId || "").trim();
+  if (!id) return "";
+  const rows = Array.isArray(infScenarios.scenarios) ? infScenarios.scenarios : [];
+  const row = rows.find((s) => String(s?.id || "") === id);
+  return scenarioViolationLabelFromRow(row);
+}
+
+/** Подпись нарушения для UI: из warning, иначе INF по scenario_id. */
+function violationLabelForWarning(w) {
+  const fromWarn = String(w?.violation_label || "").trim();
+  if (fromWarn) return fromWarn;
+  const fromInf = scenarioViolationLabelById(w?.scenario_id);
+  if (fromInf) return fromInf;
+  const reasons = Array.isArray(w?.reasons) ? w.reasons : [];
+  if (reasons.length) return formatReasonDetail(reasons[0], w?.main_id ?? "");
+  return "";
+}
+
+/** Техническая расшифровка reason от анализатора (без привязки к конкретным промптам). */
+function formatReasonDetail(text, hid) {
   let s = String(text || "").trim();
   const escHid = String(hid || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   s = s.replace(new RegExp(`^human_id\\s*:\\s*${escHid}\\s*->\\s*`, "i"), "").trim();
-  const miss = s.match(/нет\s+(.+?)\s+на кадре/i);
-  if (miss) return `Отсутствует «${miss[1]}» на кадре`;
-  const lap = s.match(/^(.+?)\s+и\s+(.+?)\s+не пересекаются/i);
-  if (lap) return `«${lap[1]}» и «${lap[2]}» не пересекаются`;
-  const lap1 = s.match(/^(.+?)\s+не пересекается с основным/i);
-  if (lap1) return `«${lap1[1]}» не пересекается с основным объектом`;
+  s = s.replace(new RegExp(`^human\\s*->\\s*`, "i"), "").trim();
+  const absent = s.match(/отсутствует\s+(.+?)(?:\s*\(|$)/i);
+  if (absent) {
+    const cov = s.match(/СИЗ на (\d+)% кадров/i);
+    if (cov) return `Отсутствует «${absent[1].trim()}» (на ${cov[1]}% кадров с human)`;
+    return `Отсутствует «${absent[1].trim()}»`;
+  }
+  const weak = s.match(/^(.+?):\s*слабое пересечение с (.+?)\s+\((\d+)%/i);
+  if (weak) return `Слабое пересечение «${weak[1].trim()}» с ${weak[2].trim()} (${weak[3]}% кадров)`;
+  const pct = s.match(/пересечение с (.+?) в (\d+)% кадров/i);
+  if (pct) return `Недостаточное пересечение с ${pct[1]} (${pct[2]}% кадров)`;
+  const pairPct = s.match(/пересекаются только в (\d+)% кадров/i);
+  if (pairPct) return `Слабое пересечение элементов (${pairPct[1]}% кадров)`;
   return s || text;
 }
 
 function uniqueDetectedViolations(warnings, hid) {
   const map = new Map();
   (Array.isArray(warnings) ? warnings : []).forEach((w) => {
-    const list = Array.isArray(w?.reasons) ? w.reasons : [];
-    list.forEach((r) => {
-      const text = String(r || "").trim();
-      if (!text) return;
-      if (!map.has(text)) {
-        map.set(text, {
-          text,
-          key: violKey(text),
-          label: formatDefectLabel(text, hid),
-          count: 0,
-          sample: w,
-        });
+    const label = violationLabelForWarning(w);
+    const reasons = Array.isArray(w?.reasons) ? w.reasons : [];
+    const detail = reasons.map((r) => formatReasonDetail(r, hid)).filter(Boolean).join(" · ");
+    const mapKey = String(w?.scenario_id || label || reasons[0] || "").trim();
+    if (!mapKey) return;
+    if (!map.has(mapKey)) {
+      map.set(mapKey, {
+        text: reasons[0] || "",
+        detail,
+        key: violKey(mapKey),
+        label,
+        count: 0,
+        confidenceSum: 0,
+        confidenceMax: 0,
+        sample: w,
+      });
+    }
+    const row = map.get(mapKey);
+    row.count += 1;
+    const conf = Number(w?.confidence || 0);
+    if (Number.isFinite(conf) && conf > 0) {
+      row.confidenceSum += conf;
+      if (conf > row.confidenceMax) {
+        row.confidenceMax = conf;
+        row.sample = w;
       }
-      map.get(text).count += 1;
-    });
+    }
   });
   return Array.from(map.values());
 }
@@ -305,9 +472,14 @@ function humanViolBlock(hid) {
   return humanBlockById(hid);
 }
 
-function humanViolationText(hid) {
+function humanViolationTexts(hid) {
   const block = humanViolBlock(hid);
-  return String(block?.querySelector(".human-violation-text")?.value || "").trim();
+  const inputs = block ? block.querySelectorAll(".human-violation-text") : [];
+  return Array.from(inputs).map((inp) => String(inp.value || "").trim()).filter(Boolean);
+}
+
+function humanViolationText(hid) {
+  return humanViolationTexts(hid).join("; ");
 }
 
 function violationsSummaryForHuman(hid) {
@@ -330,19 +502,92 @@ function reasonsForHuman(hid) {
   return [];
 }
 
-function violationFieldHtml(hid, detected) {
-  const top = Array.isArray(detected) && detected.length
-    ? detected.reduce((a, b) => ((b.count || 0) > (a.count || 0) ? b : a), detected[0])
-    : null;
-  const hint = top
-    ? `<p class="muted small viol-hint">Система: ${esc(top.label || formatDefectLabel(top.text, hid))}</p>`
-    : "";
-  return `
-    <label class="human-violation-field full">
-      Нарушение
-      <input class="human-violation-text" type="text" placeholder="Например: отсутствует каска" />
-    </label>
-    ${hint}`;
+function defaultViolationLabel() {
+  const raw = String(folderAnalyzerParams.violation_label || "").trim();
+  if (!raw) return "";
+  const parts = raw.split(/\s*\|\s*/).map((x) => String(x || "").trim()).filter(Boolean);
+  if (parts.length <= 1) return raw;
+  return parts.join("; ");
+}
+
+function violationLabelFromResult(out) {
+  const arr = Array.isArray(out?.violation_labels)
+    ? out.violation_labels.map((x) => String(x || "").trim()).filter(Boolean)
+    : [];
+  if (arr.length) return arr.join(" | ");
+  return String(out?.violation_label || out?.scenario_title || "").trim();
+}
+
+function violationPresetForHuman(hid, detected, warningsForHuman) {
+  const fromWarnings = (Array.isArray(warningsForHuman) ? warningsForHuman : [])
+    .map((w) => violationLabelForWarning(w))
+    .filter(Boolean);
+  const uniqLabels = [...new Set(fromWarnings)];
+  if (uniqLabels.length) return uniqLabels.join("; ");
+  const list = Array.isArray(detected) ? detected : [];
+  if (list.length) {
+    return list.map((v) => String(v.label || "").trim()).filter(Boolean).join("; ");
+  }
+  return "";
+}
+
+function violationRowsHtml(hid, warningsForHuman) {
+  const arr = Array.isArray(warningsForHuman) ? warningsForHuman : [];
+  if (!arr.length) {
+    return `
+      <label class="human-violation-field full">
+        Нарушение
+        <input class="human-violation-text" type="text" placeholder="Например: человек без каски" />
+      </label>`;
+  }
+  return arr.map((w, i) => {
+    const label = violationLabelForWarning(w);
+    const reasons = Array.isArray(w?.reasons) ? w.reasons : [];
+    const detail = reasons.map((r) => formatReasonDetail(r, hid)).filter(Boolean).join(" · ");
+    const conf = Number(w?.confidence || 0);
+    const confLabel = conf > 0 ? ` · confidence: ${esc(conf.toFixed(2))}` : "";
+    const title = arr.length > 1 ? `Нарушение ${i + 1}` : "Нарушение";
+    const hint = detail
+      ? `<p class="muted small viol-hint">Детали анализатора: ${esc(detail)}${confLabel}</p>`
+      : "";
+    return `
+      <div class="human-violation-item">
+        <label class="human-violation-field full">
+          ${title}
+          <input class="human-violation-text" type="text" value="${esc(label)}" placeholder="Например: человек без каски" />
+        </label>
+        ${hint}
+      </div>`;
+  }).join("");
+}
+
+function violationFieldHtml(hid, detected, warningsForHuman) {
+  return violationRowsHtml(hid, warningsForHuman);
+}
+
+function applyViolationPresetsToBlocks() {
+  document.querySelectorAll(".human-block").forEach((block) => {
+    const hid = String(block.getAttribute("data-human-id") || "").trim();
+    const warnings = warningsByHumanId[hid] || [];
+    const inputs = block.querySelectorAll(".human-violation-text");
+    if (warnings.length && inputs.length) {
+      warnings.forEach((w, i) => {
+        const inp = inputs[i];
+        if (!inp || String(inp.value || "").trim()) return;
+        const label = violationLabelForWarning(w);
+        if (label) inp.value = label;
+      });
+      return;
+    }
+    const inp = block.querySelector(".human-violation-text");
+    if (!inp || String(inp.value || "").trim()) return;
+    const preset = violationPresetForHuman(
+      hid,
+      detectedViolationsByHumanId[hid] || [],
+      warningsByHumanId[hid] || [],
+    );
+    if (preset) inp.value = preset;
+  });
 }
 
 function reportImageForHuman(hid) {
@@ -679,7 +924,10 @@ function renderWarnings(items) {
   const box = document.getElementById("warnings-list");
   const repStatus = document.getElementById("report-status");
   const repResult = document.getElementById("report-result");
-  lastWarnings = Array.isArray(items) ? items : [];
+  const rows = Array.isArray(items)
+    ? items.filter((x) => String(x?.status || "confirmed").toLowerCase() === "confirmed")
+    : [];
+  lastWarnings = rows;
   currentMiddleWarning = null;
   middleWarningByHumanId = {};
   warningsByHumanId = {};
@@ -689,13 +937,13 @@ function renderWarnings(items) {
   setBuildVideoEnabled(lastWarnings.length > 0 && !!selectedFolder);
   setReportEnabled();
   resetWarningVideo();
-  if (!Array.isArray(items) || !items.length) {
+  if (!rows.length) {
     box.innerHTML = "<p class='muted'>WARNING не найдено.</p>";
     updateReportSelectionSummary();
     updateReportPanel();
     return;
   }
-  const grouped = groupWarningsByMainId(items);
+  const grouped = groupWarningsByMainId(rows);
   const ids = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
   ids.forEach((hid) => {
     const arr = (grouped[hid] || []).slice().sort(
@@ -731,9 +979,9 @@ function renderWarnings(items) {
               Включить в отчёт
             </label>
           </div>
-          <p class="muted small">Всего WARNING: ${arr.length}</p>
+          <p class="muted small">Всего CONFIRMED WARNING: ${arr.length}${arr.length > 1 ? " (по одному на сценарий)" : ""}</p>
           <div class="inline-report human-block" data-human-id="${esc(hid)}">
-            ${violationFieldHtml(hid, detected)}
+            ${violationFieldHtml(hid, detected, arr)}
             <h3>Данные для отчёта</h3>
             <div class="human-row">
               <label>Здание
@@ -760,12 +1008,19 @@ function renderWarnings(items) {
     `;
   }).join("");
   const mainLbl = esc(analysisPrompts.main || getCurrentPrompts().main || "—");
+  const violFromRows = rows.map((w) => violationLabelForWarning(w)).filter(Boolean);
+  const violUnique = [...new Set(violFromRows)];
+  const violLine = violUnique.length
+    ? `<p class="warnings-intro muted small">Зафиксировано: <strong>${esc(violUnique.join("; "))}</strong></p>`
+    : "";
   box.innerHTML = `
-    <p class="warnings-intro muted small">Основной промт: <strong>${mainLbl}</strong> · всего WARNING: <strong>${items.length}</strong></p>
+    <p class="warnings-intro muted small">Основной промт: <strong>${mainLbl}</strong> · всего CONFIRMED WARNING: <strong>${rows.length}</strong></p>
+    ${violLine}
     ${blocks}
   `;
   applyRevealAnimation();
   fillRowSelects();
+  applyViolationPresetsToBlocks();
   bindHumanReportPickers();
   box.querySelectorAll(".build-one-video-btn").forEach((btn) => {
     btn.addEventListener("click", () => buildVideoForOneHuman(String(btn.getAttribute("data-human-id") || "")));
@@ -797,6 +1052,218 @@ function fillInfSelects() {
   applyRevealAnimation();
 }
 
+function getEnabledScenarios() {
+  const enabledSet = new Set(
+    (Array.isArray(infScenarios.enabled_ids) ? infScenarios.enabled_ids : []).map((x) => String(x || "")),
+  );
+  const rows = Array.isArray(infScenarios.scenarios) ? infScenarios.scenarios : [];
+  return rows.filter((x) => enabledSet.has(String(x.id || "")) || x.enabled || x.active);
+}
+
+function getActiveScenario() {
+  const rows = getEnabledScenarios();
+  return rows[0] || null;
+}
+
+function renderMainApiPrompt() {
+  const el = document.getElementById("main-api-prompt");
+  if (el) el.textContent = apiPromptText || "— не задан —";
+}
+
+async function loadApiPrompt() {
+  const out = await apiGet("/api/inf/api_prompt");
+  if (!out.ok) return;
+  apiPromptText = String(out.prompt || "").trim();
+  const inp = document.getElementById("inf-api-prompt");
+  if (inp) inp.value = apiPromptText;
+  renderMainApiPrompt();
+}
+
+async function saveApiPrompt() {
+  const st = document.getElementById("inf-status");
+  const inp = document.getElementById("inf-api-prompt");
+  const prompt = String(inp?.value || "").trim();
+  if (!prompt) {
+    if (st) st.textContent = "Введите промпт SAM API.";
+    return;
+  }
+  const out = await apiPost("/api/inf/api_prompt/set", { prompt });
+  if (!out.ok) {
+    if (st) st.textContent = `Ошибка: ${out.error || "unknown"}`;
+    return;
+  }
+  apiPromptText = String(out.prompt || "").trim();
+  renderMainApiPrompt();
+  if (st) st.textContent = "Промпт SAM API сохранён.";
+  debugLog("inf", `API prompt: ${apiPromptText}`);
+}
+
+function renderActiveScenarioBox() {
+  const enabled = getEnabledScenarios();
+  const listEl = document.getElementById("enabled-scenarios-list");
+  const splitEl = document.getElementById("active-scenario-split");
+  renderMainApiPrompt();
+  if (!listEl) return;
+  if (!enabled.length) {
+    listEl.innerHTML = "<li>— нет включённых —</li>";
+    if (splitEl) splitEl.textContent = "Отметьте сценарии анализатора на вкладке «Справочник».";
+    return;
+  }
+  listEl.innerHTML = enabled.map((sc) => {
+    const chain = String(sc.prompt || "").trim();
+    const { main, linked } = promptToAnalyzer(chain);
+    const parts = main
+      ? `main=${main}${linked.length ? `, linked=[${linked.join(", ")}]` : ""}`
+      : "";
+    return `<li><strong>${esc(sc.title)}</strong>${chain ? `<br><span class="mono muted">Цепочка: ${esc(chain)}</span>` : ""}${parts ? `<br><span class="muted">${esc(parts)}</span>` : ""}</li>`;
+  }).join("");
+  if (splitEl) {
+    splitEl.textContent = enabled.length > 1
+      ? `После инференса — ${enabled.length} прогона анализатора в одной папке.`
+      : "После инференса — один прогон анализатора.";
+  }
+}
+
+function renderInfScenariosList() {
+  const box = document.getElementById("inf-scenarios-list");
+  const countEl = document.getElementById("inf-scenarios-count");
+  const rows = Array.isArray(infScenarios.scenarios) ? infScenarios.scenarios : [];
+  if (countEl) countEl.textContent = String(rows.length);
+  if (!box) return;
+  if (!rows.length) {
+    box.innerHTML = "<p class='muted small'>Сценариев нет. Добавьте ниже.</p>";
+    return;
+  }
+  const enabledSet = new Set(
+    (Array.isArray(infScenarios.enabled_ids) ? infScenarios.enabled_ids : []).map((x) => String(x || "")),
+  );
+  box.innerHTML = rows.map((sc) => {
+    const id = esc(sc.id);
+    const checked = enabledSet.has(String(sc.id || "")) || !!sc.enabled || !!sc.active;
+    return `
+      <div class="scenario-row${checked ? " is-active" : ""}" data-scenario-id="${id}">
+        <label class="check-field" title="Включить в обработку">
+          <input type="checkbox" class="inf-scenario-enabled" value="${id}" ${checked ? "checked" : ""} />
+        </label>
+        <div class="scenario-row-body">
+          <strong>${esc(sc.title)}</strong>
+          <span class="mono small muted">Цепочка: ${esc(sc.prompt)}</span>
+        </div>
+        <button type="button" class="btn-ghost btn-sm" data-scenario-del="${id}">Удалить</button>
+      </div>
+    `;
+  }).join("");
+  box.querySelectorAll(".inf-scenario-enabled").forEach((inp) => {
+    inp.addEventListener("change", async () => {
+      const sid = String(inp.value || "").trim();
+      if (!sid) return;
+      await setScenarioEnabled(sid, !!inp.checked);
+    });
+  });
+  box.querySelectorAll("[data-scenario-del]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const sid = btn.getAttribute("data-scenario-del");
+      if (!sid) return;
+      if (!confirm("Удалить сценарий?")) return;
+      await deleteScenario(sid);
+    });
+  });
+}
+
+async function loadScenarios() {
+  const out = await apiGet("/api/inf/scenarios");
+  if (!out.ok) {
+    debugLog("err", `Сценарии: ${out.error || "unknown"}`);
+    return;
+  }
+  infScenarios = {
+    scenarios: Array.isArray(out.scenarios) ? out.scenarios : [],
+    enabled_ids: Array.isArray(out.enabled_ids) ? out.enabled_ids.map((x) => String(x || "")) : [],
+    active_id: String(out.active_id || "").trim(),
+  };
+  renderInfScenariosList();
+  renderActiveScenarioBox();
+}
+
+async function setScenarioEnabled(id, enabled) {
+  const st = document.getElementById("inf-status");
+  const out = await apiPost("/api/inf/scenarios/set_enabled", { id, enabled: !!enabled });
+  if (!out.ok) {
+    if (st) st.textContent = `Ошибка сценария: ${out.error || "unknown"}`;
+    return;
+  }
+  infScenarios = {
+    scenarios: Array.isArray(out.scenarios) ? out.scenarios : [],
+    enabled_ids: Array.isArray(out.enabled_ids) ? out.enabled_ids.map((x) => String(x || "")) : [],
+    active_id: String(out.active_id || "").trim(),
+  };
+  renderInfScenariosList();
+  renderActiveScenarioBox();
+  if (st) st.textContent = enabled ? "Сценарий включён." : "Сценарий выключен.";
+  debugLog("inf", `Сценарий ${id}: enabled=${enabled}`);
+}
+
+async function addScenario() {
+  const st = document.getElementById("inf-status");
+  const title = String(document.getElementById("inf-scenario-title")?.value || "").trim();
+  const prompt = String(document.getElementById("inf-scenario-prompt")?.value || "").trim();
+  if (!title || !prompt) {
+    if (st) st.textContent = "Введите название и цепочку анализатора.";
+    return;
+  }
+  const out = await apiPost("/api/inf/scenarios/add", { title, prompt });
+  if (!out.ok) {
+    if (st) st.textContent = `Ошибка: ${out.error || "unknown"}`;
+    return;
+  }
+  infScenarios = {
+    scenarios: Array.isArray(out.scenarios) ? out.scenarios : [],
+    enabled_ids: Array.isArray(out.enabled_ids) ? out.enabled_ids.map((x) => String(x || "")) : [],
+    active_id: String(out.active_id || "").trim(),
+  };
+  document.getElementById("inf-scenario-title").value = "";
+  document.getElementById("inf-scenario-prompt").value = "";
+  renderInfScenariosList();
+  renderActiveScenarioBox();
+  if (st) st.textContent = "Сценарий добавлен.";
+}
+
+async function deleteScenario(id) {
+  const st = document.getElementById("inf-status");
+  const out = await apiPost("/api/inf/scenarios/delete", { id });
+  if (!out.ok) {
+    if (st) st.textContent = `Ошибка: ${out.error || "unknown"}`;
+    return;
+  }
+  infScenarios = {
+    scenarios: Array.isArray(out.scenarios) ? out.scenarios : [],
+    enabled_ids: Array.isArray(out.enabled_ids) ? out.enabled_ids.map((x) => String(x || "")) : [],
+    active_id: String(out.active_id || "").trim(),
+  };
+  renderInfScenariosList();
+  renderActiveScenarioBox();
+  if (st) st.textContent = "Сценарий удалён.";
+}
+
+function updateFolderScenarioReadonly() {
+  const apiEl = document.getElementById("folder-api-prompt");
+  const promptEl = document.getElementById("folder-scenario-prompt");
+  const mainEl = document.getElementById("folder-scenario-main");
+  const linkedEl = document.getElementById("folder-scenario-linked");
+  const p = folderAnalyzerParams;
+  if (apiEl) apiEl.textContent = p.api_prompt ? `SAM API: ${p.api_prompt}` : "SAM API: —";
+  if (promptEl) {
+    const viol = p.violation_label ? ` · нарушение: ${p.violation_label}` : "";
+    promptEl.textContent = p.prompt ? `Цепочка анализатора: ${p.prompt}${viol}` : (p.violation_label ? `Нарушение: ${p.violation_label}` : "—");
+  }
+  if (mainEl) mainEl.textContent = p.main ? `Основной: ${p.main}` : "Основной: —";
+  if (linkedEl) {
+    linkedEl.textContent = p.linked.length
+      ? `Связанные: ${p.linked.join(" → ")}`
+      : "Связанные: —";
+  }
+}
+
 async function loadInfOptions() {
   const st = document.getElementById("inf-status");
   const hint = document.getElementById("inf-root-hint");
@@ -820,6 +1287,8 @@ async function loadInfOptions() {
     st.textContent = msg;
   }
   fillInfSelects();
+  await loadScenarios();
+  await loadApiPrompt();
 }
 
 async function addInf(kind, inputId) {
@@ -878,20 +1347,41 @@ async function delInf(kind, selectId) {
   if (st) st.textContent = "Удалено.";
 }
 
+async function loadFolderAnalyzerParams(folder) {
+  folderAnalyzerParams = { main: "", linked: [], prompt: "", violation_label: "", api_prompt: "" };
+  if (!folder) return;
+  const meta = await apiGet(`/api/folders/meta?folder=${encodeURIComponent(folder)}`);
+  if (meta.ok) {
+    const chain = String(meta.analyzer_chain || meta.scenario_prompt || "").trim();
+    const main = String(meta.analyzer_main || "").trim();
+    const violationLabel = String(meta.violation_label || meta.scenario_title || "").trim();
+    const apiPrompt = String(meta.api_prompt || "").trim();
+    const linked = Array.isArray(meta.analyzer_linked)
+      ? meta.analyzer_linked.map((x) => String(x || "").trim()).filter(Boolean)
+      : [];
+    if (main || chain) {
+      folderAnalyzerParams = {
+        main: main || promptToAnalyzer(chain).main,
+        linked: linked.length ? linked : promptToAnalyzer(chain).linked,
+        prompt: chain,
+        violation_label: violationLabel,
+        api_prompt: apiPrompt,
+      };
+    }
+  }
+}
+
 async function loadPromptsForFolder(folder) {
-  const main = document.getElementById("main-prompt");
-  const p1 = document.getElementById("linked-prompt-1");
-  const p2 = document.getElementById("linked-prompt-2");
   const anFolder = document.getElementById("an-folder");
   document.getElementById("report-status").textContent = "";
   document.getElementById("report-result").innerHTML = "";
   if (!folder) {
     anFolder.textContent = "Папка не выбрана";
-    setSelectOptions(main, [], false);
-    setSelectOptions(p1, [], true);
-    setSelectOptions(p2, [], true);
+    folderAnalyzerParams = { main: "", linked: [], prompt: "", violation_label: "", api_prompt: "" };
+    updateFolderScenarioReadonly();
     lastWarnings = [];
     setBuildVideoEnabled(false);
+    setRunAnalysisEnabled(false);
     setReportEnabled();
     resetWarningVideo();
     clearBuiltWarningVideos();
@@ -899,20 +1389,64 @@ async function loadPromptsForFolder(folder) {
   }
   loadBuiltWarningVideosState(folder);
   anFolder.textContent = `Папка: ${folder}`;
-  const res = await apiGet(`/api/analyzer/prompts?folder=${encodeURIComponent(folder)}`);
-  if (!res.ok) {
-    setSelectOptions(main, [], false);
-    setSelectOptions(p1, [], true);
-    setSelectOptions(p2, [], true);
-    document.getElementById("analysis-status").textContent = `Ошибка чтения промтов: ${res.error || "unknown"}`;
-    return;
-  }
-  const labels = (Array.isArray(res.prompts) ? res.prompts : []).map((x) => String(x.label || "")).filter(Boolean);
-  setSelectOptions(main, labels, false);
-  setSelectOptions(p1, labels, true);
-  setSelectOptions(p2, labels, true);
-  document.getElementById("analysis-status").textContent = `Найдено промтов: ${labels.length}`;
+  await loadFolderAnalyzerParams(folder);
+  updateFolderScenarioReadonly();
+  analysisPrompts = {
+    main: folderAnalyzerParams.main,
+    linked: folderAnalyzerParams.linked.slice(),
+  };
   await loadSavedAnalysis(folder);
+  await syncRunAnalysisButton(folder);
+}
+
+async function pollAnalysisAndShow(folder) {
+  const status = document.getElementById("analysis-status");
+  const out = await pollTaskUntilDone(folder, "analysis", (_st, percent, message) => {
+    setProgressUi(
+      "analysis-progress-wrap",
+      "analysis-progress-bar",
+      "analysis-progress-text",
+      "analysis-progress-pct",
+      true,
+      percent,
+      message || "Анализ…",
+    );
+    if (status) status.textContent = message || `Анализ… ${percent}%`;
+  });
+  analysisPrompts = {
+    main: String(out.main_prompt || folderAnalyzerParams.main || "").trim(),
+    linked: Array.isArray(out.linked_prompts)
+      ? out.linked_prompts.map((x) => String(x || "").trim()).filter(Boolean)
+      : folderAnalyzerParams.linked.slice(),
+  };
+  const violFromResult = violationLabelFromResult(out);
+  folderAnalyzerParams = {
+    main: analysisPrompts.main,
+    linked: analysisPrompts.linked.slice(),
+    prompt: folderAnalyzerParams.prompt,
+    violation_label: violFromResult || folderAnalyzerParams.violation_label,
+    api_prompt: folderAnalyzerParams.api_prompt,
+  };
+  updateFolderScenarioReadonly();
+  if (status) {
+    const thr = out.link_frame_thresholds || {};
+    const minPct = thr.min_link_frame_ratio != null
+      ? Math.round(Number(thr.min_link_frame_ratio) * 100)
+      : 40;
+    status.textContent = `Готово. Проверено: ${out.frames_checked}, нарушений: ${out.warnings_count} (порог пересечения по кадрам >= ${minPct}%)`;
+  }
+  renderWarnings(out.warnings || []);
+  setProgressUi(
+    "analysis-progress-wrap",
+    "analysis-progress-bar",
+    "analysis-progress-text",
+    "analysis-progress-pct",
+    true,
+    100,
+    "Анализ завершён",
+  );
+  setTimeout(hideAnalysisProgress, 1200);
+  return out;
 }
 
 async function loadSavedAnalysis(folder) {
@@ -929,7 +1463,7 @@ async function loadSavedAnalysis(folder) {
       setBuildVideoEnabled(false);
       setReportEnabled();
       resetWarningVideo();
-      box.innerHTML = "<p class='muted'>Анализ еще не запускался для этой папки.</p>";
+      box.innerHTML = "<p class='muted'>Анализ ещё не запускался. Нажмите «Запустить анализ».</p>";
       return;
     }
     const warnings = Array.isArray(out.warnings) ? out.warnings : [];
@@ -937,6 +1471,17 @@ async function loadSavedAnalysis(folder) {
       main: String(out.main_prompt || "").trim(),
       linked: Array.isArray(out.linked_prompts) ? out.linked_prompts.map((x) => String(x || "").trim()).filter(Boolean) : [],
     };
+    const violFromResult = violationLabelFromResult(out);
+    if (analysisPrompts.main || violFromResult) {
+      folderAnalyzerParams = {
+        main: analysisPrompts.main || folderAnalyzerParams.main,
+        linked: analysisPrompts.linked.length ? analysisPrompts.linked.slice() : folderAnalyzerParams.linked.slice(),
+        prompt: folderAnalyzerParams.prompt,
+        violation_label: violFromResult || folderAnalyzerParams.violation_label,
+        api_prompt: folderAnalyzerParams.api_prompt,
+      };
+      updateFolderScenarioReadonly();
+    }
     if (out.human_video_urls && typeof out.human_video_urls === "object") {
       Object.entries(out.human_video_urls).forEach(([hid, url]) => {
         const id = String(hid || "").trim();
@@ -946,7 +1491,11 @@ async function loadSavedAnalysis(folder) {
       saveBuiltWarningVideosState();
     }
     renderWarnings(warnings);
-    status.textContent = `Загружен сохраненный анализ. Проверено: ${Number(out.frames_checked || 0)}, WARNING: ${Number(out.warnings_count || 0)}`;
+    const thr = out.link_frame_thresholds || {};
+    const minPct = thr.min_link_frame_ratio != null
+      ? Math.round(Number(thr.min_link_frame_ratio) * 100)
+      : 40;
+    status.textContent = `Загружен анализ. Проверено: ${Number(out.frames_checked || 0)}, нарушений: ${Number(out.warnings_count || 0)} (порог >= ${minPct}% кадров с пересечением)`;
     if (out.preview_video_url) showWarningVideo(out.preview_video_url);
   } catch (e) {
     status.textContent = `Ошибка чтения сохраненного анализа: ${e?.message || e}`;
@@ -1075,7 +1624,7 @@ async function connectApiBase() {
 
 document.getElementById("process-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const prompt = document.getElementById("prompt").value.trim();
+  const enabledScenarios = getEnabledScenarios();
   const video = document.getElementById("video").files[0];
   const fastX2 = !!document.getElementById("fast-x2")?.checked;
   const fpsHalf = !!document.getElementById("fps-half")?.checked;
@@ -1092,12 +1641,23 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
   if (!Number.isFinite(videoPartSec) || videoPartSec < 0) videoPartSec = 0;
   videoPartSec = Math.round(videoPartSec * 10) / 10;
   const status = document.getElementById("status");
+  const analysisStatus = document.getElementById("analysis-status");
   const btn = document.getElementById("process-btn");
   if (!video) return alert("Выберите видео");
-  if (!prompt) return alert("Введите промпт");
+  if (!apiPromptText) {
+    alert("Задайте промпт SAM API на вкладке «Справочник».");
+    return;
+  }
+  if (!enabledScenarios.length) {
+    alert("Нет включённых сценариев анализатора. Отметьте на вкладке «Справочник».");
+    return;
+  }
+  debugLog(
+    "proc",
+    `Старт: ${enabledScenarios.length} сценар(иев) — ${enabledScenarios.map((s) => s.title).join(", ")}`,
+  );
   const fd = new FormData();
   fd.append("video", video);
-  fd.append("prompt", prompt);
   fd.append("fast_x2", fastX2 ? "true" : "false");
   fd.append("fps_half", fpsHalf ? "true" : "false");
   fd.append("scale_div", String(scaleDiv));
@@ -1111,10 +1671,20 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
     ? `Обработка началась (режим ${tags.join(" + ")})...`
     : "Обработка началась...";
   btn.disabled = true;
-  const res = await apiPost("/api/process_video", fd, true);
+  let res;
+  try {
+    res = await apiPost("/api/process_video", fd, true);
+  } catch (err) {
+    btn.disabled = false;
+    status.textContent = `Ошибка: ${err?.message || err}`;
+    debugLog("err", String(err?.message || err));
+    return;
+  }
   btn.disabled = false;
+  if (Array.isArray(res.debug)) debugLogServer(res.debug);
   if (!res.ok) {
     status.textContent = `Ошибка: ${res.error || "unknown"}`;
+    debugLog("err", res.error || "unknown");
     return;
   }
   const doneTags = [];
@@ -1123,71 +1693,56 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
   if (Number(res.video_part_sec || 0) > 0) {
     doneTags.push(`части/${Number(res.video_part_sec)}с×${Number(res.chunks_total || 0)}`);
   }
-  status.textContent = `Готово. Создана папка: ${res.folder || "-"}${doneTags.length ? ` (${doneTags.join(" + ")})` : ""}`;
+  const runs = Array.isArray(res.runs) ? res.runs : [];
+  const folder = String(res.folder || "").trim();
+  const okRuns = runs.filter((r) => r.analysis_ok);
+  status.textContent = `Готово. Папка: ${folder || "-"}${okRuns.length ? `, анализ: ${okRuns.length}/${runs.length} сценариев` : ""}${doneTags.length ? ` (${doneTags.join(" + ")})` : ""}`;
   document.getElementById("video").value = "";
   await refreshList();
-});
-
-document.getElementById("run-analysis-btn").addEventListener("click", async () => {
-  const status = document.getElementById("analysis-status");
-  const btn = document.getElementById("run-analysis-btn");
-  if (!selectedFolder) {
-    status.textContent = "Сначала откройте папку.";
-    return;
-  }
-  const mainPrompt = String(document.getElementById("main-prompt").value || "").trim();
-  const p1 = String(document.getElementById("linked-prompt-1").value || "").trim();
-  const p2 = String(document.getElementById("linked-prompt-2").value || "").trim();
-  if (!mainPrompt) {
-    status.textContent = "Выберите основной промт.";
-    return;
-  }
-  const linked = [];
-  if (p1 && p1 !== mainPrompt) linked.push(p1);
-  if (p2 && p2 !== mainPrompt && p2 !== p1) linked.push(p2);
-  status.textContent = "Анализ по маскам...";
-  setBuildVideoEnabled(false);
-  resetWarningVideo();
-  clearBuiltWarningVideos(true);
-  hideVideoProgress();
-  setProgressUi("analysis-progress-wrap", "analysis-progress-bar", "analysis-progress-text", "analysis-progress-pct", true, 0, "Запуск анализа…");
-  if (btn) btn.disabled = true;
-  try {
-    const started = await apiPost("/api/analyzer/run", {
-      folder: selectedFolder,
-      main_prompt: mainPrompt,
-      linked_prompts: linked,
-    });
-    if (!started.ok) {
-      status.textContent = `Ошибка анализа: ${started.error || "unknown"}`;
-      renderWarnings([]);
-      return;
+  if (folder) {
+    selectedFolder = folder;
+    await loadPromptsForFolder(folder);
+    if (okRuns.length) {
+      const last = okRuns[okRuns.length - 1];
+      const allViolations = okRuns
+        .map((r) => String(r?.violation_label || "").trim())
+        .filter(Boolean)
+        .filter((x, i, arr) => arr.indexOf(x) === i);
+      folderAnalyzerParams = {
+        main: String(last.analyzer_main || "").trim(),
+        linked: Array.isArray(last.analyzer_linked) ? last.analyzer_linked.map((x) => String(x || "").trim()).filter(Boolean) : [],
+        prompt: String((last.scenario && last.scenario.prompt) || "").trim(),
+        violation_label: allViolations.join(" | "),
+        api_prompt: String(res.api_prompt || apiPromptText || "").trim(),
+      };
+      await loadSavedAnalysis(folder);
     }
-    const out = await pollTaskUntilDone(selectedFolder, "analysis", (_st, percent, message) => {
-      setProgressUi(
-        "analysis-progress-wrap",
-        "analysis-progress-bar",
-        "analysis-progress-text",
-        "analysis-progress-pct",
-        true,
-        percent,
-        message || "Анализ…",
-      );
-      if (status) status.textContent = message || `Анализ… ${percent}%`;
-    });
-    analysisPrompts = {
-      main: String(out.main_prompt || mainPrompt).trim(),
-      linked: Array.isArray(out.linked_prompts) ? out.linked_prompts.map((x) => String(x || "").trim()).filter(Boolean) : linked,
-    };
-    status.textContent = `Готово. Проверено: ${out.frames_checked}, WARNING: ${out.warnings_count}`;
-    renderWarnings(out.warnings || []);
-    setProgressUi("analysis-progress-wrap", "analysis-progress-bar", "analysis-progress-text", "analysis-progress-pct", true, 100, "Анализ завершён");
-  } catch (e) {
-    status.textContent = `Ошибка анализа: ${e?.message || e}`;
-    renderWarnings([]);
-  } finally {
-    if (btn) btn.disabled = false;
-    setTimeout(hideAnalysisProgress, 1200);
+  }
+  if (folder && res.analysis_started && !okRuns.length) {
+    debugLog("proc", "Авто-анализ: ожидание (фон)…");
+    setBuildVideoEnabled(false);
+    resetWarningVideo();
+    clearBuiltWarningVideos(true);
+    hideVideoProgress();
+    setProgressUi(
+      "analysis-progress-wrap",
+      "analysis-progress-bar",
+      "analysis-progress-text",
+      "analysis-progress-pct",
+      true,
+      0,
+      "Авто-анализ…",
+    );
+    if (analysisStatus) analysisStatus.textContent = "Авто-анализ…";
+    try {
+      await pollAnalysisAndShow(folder);
+    } catch (err) {
+      if (analysisStatus) analysisStatus.textContent = `Ошибка авто-анализа: ${err?.message || err}`;
+      debugLog("err", String(err?.message || err));
+    }
+  } else if (runs.length && analysisStatus) {
+    const okCount = runs.filter((r) => r.analysis_ok).length;
+    analysisStatus.textContent = `Обработано сценариев: ${runs.length}, анализ OK: ${okCount}.`;
   }
 });
 
@@ -1226,6 +1781,7 @@ async function runVideoBuild(mainId) {
   return out;
 }
 
+document.getElementById("run-analysis-btn")?.addEventListener("click", () => runFolderAnalysis());
 document.getElementById("build-video-btn").addEventListener("click", async () => {
   const status = document.getElementById("analysis-status");
   const btn = document.getElementById("build-video-btn");
@@ -1380,6 +1936,30 @@ document.getElementById("gen-inline-report-btn")?.addEventListener("click", gene
   document.getElementById(id)?.addEventListener("change", setReportEnabled);
 });
 
+document.getElementById("debug-clear-btn")?.addEventListener("click", clearDebugLog);
+document.getElementById("debug-copy-btn")?.addEventListener("click", async () => {
+  const text = debugLogLines.join("\n");
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    debugLog("ui", "Лог скопирован в буфер");
+  } catch (e) {
+    debugLog("err", `Копирование: ${e?.message || e}`);
+  }
+});
+document.getElementById("inf-api-prompt-save")?.addEventListener("click", () => saveApiPrompt());
+document.getElementById("inf-scenario-add")?.addEventListener("click", () => addScenario());
+document.getElementById("inf-scenario-del")?.addEventListener("click", async () => {
+  const enabled = getEnabledScenarios();
+  const active = enabled[0] || getActiveScenario();
+  if (!active) {
+    const st = document.getElementById("inf-status");
+    if (st) st.textContent = "Нет сценария для удаления.";
+    return;
+  }
+  if (!confirm(`Удалить сценарий «${active.title}»?`)) return;
+  await deleteScenario(String(active.id || ""));
+});
 document.getElementById("refresh-btn").addEventListener("click", refreshList);
 document.getElementById("stats-refresh-btn")?.addEventListener("click", loadStatsTable);
 document.getElementById("api-connect-btn").addEventListener("click", connectApiBase);
@@ -1406,8 +1986,10 @@ document.addEventListener("visibilitychange", () => {
 });
 
 (async () => {
+  debugLog("ui", "WEB samv загружен");
   refreshApiStatus();
   await loadInfOptions();
+  await loadApiPrompt();
   await refreshList();
   applyRevealAnimation();
 })();

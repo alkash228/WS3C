@@ -18,6 +18,7 @@ def render_warning_jpeg_job(args: tuple) -> dict | None:
         main_id,
         reasons,
         warn_dir,
+        warn_url_base,
         main_prompt,
         h,
         w,
@@ -45,7 +46,7 @@ def render_warning_jpeg_job(args: tuple) -> dict | None:
             "frame": int(fidx),
             "main_id": int(main_id),
             "reasons": list(reasons),
-            "image_url": f"/storage/folders/{folder}/analysis/warnings/{out_name}",
+            "image_url": f"{warn_url_base}/{out_name}",
         }
     finally:
         cap.release()

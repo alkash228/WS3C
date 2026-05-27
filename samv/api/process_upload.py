@@ -31,13 +31,14 @@ def run_process_video(
     scale_div: float,
     fps_div: int,
     video_part_sec: float,
+    folder_name: str | None = None,
 ) -> dict[str, object]:
     """Прогон видео через API; возвращает поля для JSON-ответа."""
     meta = video_meta_from_bytes(video_bytes, suffix=ext)
     original_wh = (int(meta[0]), int(meta[1])) if meta is not None else None
     original_fps = float(meta[2]) if meta is not None else 0.0
 
-    folder_name = new_folder_name()
+    folder_name = str(folder_name or "").strip() or new_folder_name()
     for _ in range(20):
         folder, _, _ = folder_paths(folder_name)
         if not folder.exists():

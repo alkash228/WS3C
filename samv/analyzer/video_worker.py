@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from samv.analyzer.paths import ensure_unified_analyzer_result
 from samv.storage.folders import load_folder_payload
 from samv.tasks import task_progress, task_set
 from samv.video.builder import build_warning_video
@@ -14,7 +15,9 @@ def run_video_build(folder: str, main_id: int | None, colorful_masks: bool = Fal
         folder_path, data_payload, video_path = load_folder_payload(folder)
         if video_path is None or not video_path.is_file():
             raise RuntimeError("video.* not found in folder")
-        result_path = folder_path / "analysis" / "analyzer_result.json"
+        result_path = ensure_unified_analyzer_result(folder_path)
+        if result_path is None:
+            result_path = folder_path / "analysis" / "analyzer_result.json"
         if not result_path.is_file():
             raise RuntimeError("Run analysis first")
         analysis_payload = json.loads(result_path.read_text(encoding="utf-8"))

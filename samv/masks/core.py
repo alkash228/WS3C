@@ -133,7 +133,7 @@ def bbox_from_mask(mask: np.ndarray) -> tuple[int, int, int, int] | None:
 
 def mask_overlap_ok(a: np.ndarray, b: np.ndarray) -> bool:
 
-    """Достаточно ли пересечения двух масок."""
+    """Достаточно ли пересечения двух масок (доля от площади b)."""
     inter = np.logical_and(a, b)
     inter_px = int(inter.sum())
     if inter_px <= 0:
@@ -147,9 +147,60 @@ def mask_overlap_ok(a: np.ndarray, b: np.ndarray) -> bool:
     return ratio >= float(cfg.AN_MIN_INTERSECTION_RATIO)
 
 
+def mask_link_ratio(main: np.ndarray, dep: np.ndarray) -> float:
+    """Доля пересечения: max(пересечение/dep, пересечение/main)."""
+    inter = np.logical_and(main, dep)
+    inter_px = int(inter.sum())
+    if inter_px <= 0:
+        return 0.0
+    dep_area = int(dep.sum())
+    main_area = int(main.sum())
+    if dep_area <= 0 or main_area <= 0:
+        return 0.0
+    return max(float(inter_px) / float(dep_area), float(inter_px) / float(main_area))
+
+
+def bbox_iou(a: tuple[int, int, int, int] | None, b: tuple[int, int, int, int] | None) -> float:
+    if a is None or b is None:
+        return 0.0
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    ax2, ay2 = ax + aw, ay + ah
+    bx2, by2 = bx + bw, by + bh
+    ix0, iy0 = max(ax, bx), max(ay, by)
+    ix1, iy1 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+    inter = float(iw * ih)
+    if inter <= 0.0:
+        return 0.0
+    union = float(aw * ah + bw * bh) - inter
+    if union <= 0.0:
+        return 0.0
+    return inter / union
+
+
+def mask_linked_to_main_ok(main: np.ndarray, dep: np.ndarray) -> bool:
+    """СИЗ на человеке: пересечение масок по % или пересечение bbox."""
+    inter = np.logical_and(main, dep)
+    inter_px = int(inter.sum())
+    if inter_px > 0:
+        dep_area = int(dep.sum())
+        main_area = int(main.sum())
+        if inter_px >= int(cfg.AN_MIN_INTERSECTION_PX) and dep_area > 0 and main_area > 0:
+            ratio_dep = float(inter_px) / float(dep_area)
+            ratio_main = float(inter_px) / float(main_area)
+            if ratio_dep >= float(cfg.AN_MIN_INTERSECTION_RATIO):
+                return True
+            if ratio_main >= float(cfg.AN_MIN_MAIN_COVERAGE_RATIO):
+                return True
+    main_bb = bbox_from_mask(main)
+    dep_bb = bbox_from_mask(dep)
+    return bbox_iou(main_bb, dep_bb) >= float(cfg.AN_MIN_BBOX_IOU)
+
+
 def mask_intersects(a: np.ndarray, b: np.ndarray) -> bool:
 
-    """Есть ли хоть одно пересечение."""
+    """Есть ли хоть одно пересечение (без порога по площади)."""
     return bool(np.logical_and(a, b).any())
 
 

@@ -602,6 +602,12 @@ button:disabled {
   margin: 0 0 8px;
 }
 
+.human-violation-item + .human-violation-item {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
 .human-violation-field .field-label {
   margin-bottom: 4px;
 }
@@ -840,6 +846,14 @@ button:disabled {
   min-height: 110px;
 }
 
+.inf-textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+}
+
 .inf-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -855,6 +869,91 @@ button:disabled {
   margin-top: 14px;
   padding: 10px 12px;
   background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.inf-card-wide {
+  grid-column: 1 / -1;
+}
+
+.inf-toolbar-scenario {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto;
+  margin-top: 12px;
+}
+
+.scenarios-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.scenario-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.scenario-row.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.scenario-row-body strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.scenario-active-box {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.scenario-active-title {
+  font-weight: 600;
+  color: var(--text);
+  margin: 4px 0;
+}
+
+.enabled-scenarios-list {
+  margin: 6px 0 0;
+  padding-left: 1.2rem;
+  list-style: disc;
+}
+
+.enabled-scenarios-list li {
+  margin: 4px 0;
+}
+
+.scenario-readonly {
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.card-debug .debug-log {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px 14px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #0d1117;
+  color: #c9d1d9;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
 }

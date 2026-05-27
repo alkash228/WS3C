@@ -1,6 +1,37 @@
 from __future__ import annotations
 
-from samv.masks.core import instance_group_by_label, mask_intersects, mask_overlap_ok
+import numpy as np
+
+from samv.masks.core import (
+    instance_group_by_label,
+    mask_link_ratio,
+    mask_linked_to_main_ok,
+    mask_overlap_ok,
+)
+
+
+def _dep_link_stats_to_target(
+    target_masks: list[np.ndarray],
+    dep_items: list[tuple[int, object]],
+) -> dict:
+    if not dep_items:
+        return {"present": False, "linked_ok": False, "link_ratio": 0.0}
+    if not target_masks:
+        return {"present": True, "linked_ok": False, "link_ratio": 0.0}
+    best_ratio = 0.0
+    linked = False
+    for _, dep_mask in dep_items:
+        for tgt in target_masks:
+            ratio = float(mask_link_ratio(tgt, dep_mask))
+            if ratio > best_ratio:
+                best_ratio = ratio
+            if mask_linked_to_main_ok(tgt, dep_mask):
+                linked = True
+    return {
+        "present": True,
+        "linked_ok": linked,
+        "link_ratio": float(best_ratio),
+    }
 
 
 def warnings_for_frame(
@@ -9,8 +40,8 @@ def warnings_for_frame(
     linked_prompts: list[str],
     h: int,
     w: int,
-) -> tuple[int, list[tuple[int, list[str]]]] | None:
-    """Один кадр: есть ли нарушения по маскам."""
+) -> tuple[int, list[dict]] | None:
+    """Метрики одного кадра: связь СИЗ с human или с предыдущим звеном цепочки."""
     try:
         fidx = int(fr.get("frame", -1))
     except Exception:
@@ -25,42 +56,73 @@ def warnings_for_frame(
     if not main_items:
         return None
 
-    hits: list[tuple[int, list[str]]] = []
+    rows: list[dict] = []
     for main_id, main_mask in main_items:
-        local_reasons: list[str] = []
         dep_hits: list[list[tuple[int, object]]] = []
+        dep_details: list[dict] = []
+        target_masks: list[np.ndarray] = [main_mask]
+        link_target = main_prompt
 
         for dep in linked_prompts:
             dep_items = instance_group_by_label(inst2, dep, h, w)
-            if not dep_items:
-                local_reasons.append(f"{main_prompt}_id:{main_id} -> нет {dep} на кадре")
-                dep_hits.append([])
-                continue
-            inter = [(dep_id, dep_mask) for dep_id, dep_mask in dep_items if mask_intersects(main_mask, dep_mask)]
-            dep_hits.append(inter)
-            if not inter:
-                local_reasons.append(f"{main_prompt}_id:{main_id} -> {dep} не пересекается с основным")
-
-        if len(linked_prompts) == 2 and len(dep_hits) >= 2 and dep_hits[0] and dep_hits[1]:
-            ok_pair = False
-            for _, d1 in dep_hits[0]:
-                for _, d2 in dep_hits[1]:
-                    if mask_overlap_ok(d1, d2):
-                        ok_pair = True
+            stats = _dep_link_stats_to_target(target_masks, dep_items)
+            inter: list[tuple[int, object]] = []
+            for dep_id, dep_mask in dep_items:
+                for tgt in target_masks:
+                    if mask_linked_to_main_ok(tgt, dep_mask):
+                        inter.append((dep_id, dep_mask))
                         break
-                if ok_pair:
-                    break
-            if not ok_pair:
-                local_reasons.append(
-                    f"{main_prompt}_id:{main_id} -> {linked_prompts[0]} и {linked_prompts[1]} не пересекаются"
-                )
+            dep_hits.append(inter)
+            dep_details.append(
+                {
+                    "dep": dep,
+                    "link_target": link_target,
+                    "present": bool(stats["present"]),
+                    "linked_to_main": bool(stats["linked_ok"]),
+                    "linked_ok": bool(stats["linked_ok"]),
+                    "link_ratio": float(stats["link_ratio"]),
+                },
+            )
+            if dep_items:
+                target_masks = [m for _, m in dep_items]
+                link_target = dep
+            else:
+                link_target = dep
 
-        if local_reasons:
-            hits.append((int(main_id), local_reasons))
+        chain_pairs: list[dict] = []
+        for i in range(len(linked_prompts) - 1):
+            left_hits = dep_hits[i] if i < len(dep_hits) else []
+            right_hits = dep_hits[i + 1] if i + 1 < len(dep_hits) else []
+            left_label = linked_prompts[i]
+            right_label = linked_prompts[i + 1]
+            pair_ok = False
+            if left_hits and right_hits:
+                for _, d1 in left_hits:
+                    for _, d2 in right_hits:
+                        if mask_overlap_ok(d1, d2):
+                            pair_ok = True
+                            break
+                    if pair_ok:
+                        break
+            chain_pairs.append(
+                {
+                    "left": left_label,
+                    "right": right_label,
+                    "both_present": bool(left_hits and right_hits),
+                    "pair_linked": pair_ok,
+                },
+            )
 
-    if not hits:
-        return None
-    return fidx, hits
+        rows.append(
+            {
+                "main_id": int(main_id),
+                "reasons": [],
+                "dep_details": dep_details,
+                "chain_pairs": chain_pairs,
+            },
+        )
+
+    return fidx, rows
 
 
 def scan_frame_job(args: tuple) -> dict | None:
@@ -71,5 +133,5 @@ def scan_frame_job(args: tuple) -> dict | None:
     row = warnings_for_frame(fr, main_prompt, linked, h, w)
     if row is None:
         return None
-    fidx, hits = row
-    return {"frame": fidx, "hits": hits}
+    fidx, rows = row
+    return {"frame": fidx, "rows": rows, "hits": []}
