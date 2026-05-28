@@ -5,6 +5,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from samv import config as cfg
+from samv.masks.core import label_matches
 from samv.parallel import map_parallel, worker_count
 from samv.video.io import safe_video_fps
 from samv.video.workers import render_clip_frame_job
@@ -48,6 +50,100 @@ def collect_clip_items(
     return clip_items
 
 
+def collect_track_clip_items(
+    warnings: list[dict],
+    payload: dict,
+    main_prompt: str,
+    main_id: int | None,
+) -> list[tuple[int, int, list[str]]]:
+    """Все кадры трека main_id, у которого есть нарушение."""
+    warning_by_mid: dict[int, list[str]] = {}
+    for witem in warnings:
+        if not isinstance(witem, dict):
+            continue
+        try:
+            mid = int(witem.get("main_id"))
+        except Exception:
+            continue
+        if main_id is not None and mid != int(main_id):
+            continue
+        slot = warning_by_mid.setdefault(mid, [])
+        viol = str(witem.get("violation_label", "") or "").strip()
+        if viol and viol not in slot:
+            slot.append(viol)
+        reasons = witem.get("reasons")
+        if isinstance(reasons, list):
+            for row in reasons:
+                txt = str(row or "").strip()
+                if txt and txt not in slot:
+                    slot.append(txt)
+    if not warning_by_mid:
+        return []
+
+    frames = payload.get("frames")
+    if not isinstance(frames, list):
+        return []
+
+    out: list[tuple[int, int, list[str]]] = []
+    for fr in frames:
+        if not isinstance(fr, dict):
+            continue
+        try:
+            fidx = int(fr.get("frame", -1))
+        except Exception:
+            continue
+        if fidx < 0:
+            continue
+        inst = fr.get("instances")
+        if not isinstance(inst, list):
+            continue
+        for row in inst:
+            if not isinstance(row, dict):
+                continue
+            try:
+                oid = int(row.get("object_id", -1))
+            except Exception:
+                continue
+            if oid not in warning_by_mid:
+                continue
+            label = str(row.get("prompt_label", "") or "").strip()
+            # Строго берём только кадры объекта по основному промпту сценария (обычно human).
+            if main_prompt and not label_matches(label, main_prompt):
+                continue
+            out.append((fidx, oid, list(warning_by_mid.get(oid) or [])))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def expand_clip_items_with_context(
+    clip_items: list[tuple[int, int, list[str]]],
+    context_frames: int,
+) -> list[tuple[int, int, list[str]]]:
+    """Расширяем список кадров окном вокруг предупреждения."""
+    ctx = max(0, int(context_frames))
+    if ctx <= 0:
+        return clip_items
+    expanded: dict[tuple[int, int], list[str]] = {}
+    for fidx, mid, reasons in clip_items:
+        for nf in range(max(0, int(fidx) - ctx), int(fidx) + ctx + 1):
+            key = (int(nf), int(mid))
+            slot = expanded.setdefault(key, [])
+            for row in reasons:
+                s = str(row or "").strip()
+                if s and s not in slot:
+                    slot.append(s)
+    return [(fidx, mid, rs) for (fidx, mid), rs in sorted(expanded.items(), key=lambda x: x[0][0])]
+
+
+def resolve_context_frames(fps: float) -> int:
+    """Считаем ширину окна вокруг warning в кадрах."""
+    by_frames = max(0, int(cfg.VIDEO_WARNING_CONTEXT_FRAMES))
+    by_seconds = 0
+    if float(fps) > 0:
+        by_seconds = max(0, int(round(float(cfg.VIDEO_WARNING_CONTEXT_SEC) * float(fps))))
+    return max(by_frames, by_seconds)
+
+
 def build_warning_video(
     folder: str,
     folder_path: Path,
@@ -70,11 +166,15 @@ def build_warning_video(
     if h <= 0 or w <= 0:
         raise RuntimeError("Invalid width/height in data.json")
 
-    clip_items = collect_clip_items(warnings, main_id)
+    fps = safe_video_fps(video_path)
+    clip_items = collect_track_clip_items(warnings, payload, main_prompt, main_id)
+    if not clip_items:
+        # Фоллбек на старое поведение, если в data.json нет трека.
+        context_frames = resolve_context_frames(fps)
+        clip_items = collect_clip_items(warnings, main_id)
+        clip_items = expand_clip_items_with_context(clip_items, context_frames)
     if not clip_items:
         raise RuntimeError("No warning frames found. Run analysis first.")
-
-    fps = safe_video_fps(video_path)
     w_enc = max(2, w - (w % 2))
     h_enc = max(2, h - (h % 2))
     tmp_dir = analysis_dir / "warnings_video_frames_tmp"

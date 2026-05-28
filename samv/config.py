@@ -32,6 +32,8 @@ AN_CONFIDENCE_W_VISIBILITY = float(os.environ.get("WEB_SAMV_ANALYZER_CONFIDENCE_
 AN_CONFIDENCE_W_ABSENCE = float(os.environ.get("WEB_SAMV_ANALYZER_CONFIDENCE_W_ABSENCE", "0.35"))
 AN_CONFIDENCE_W_TEMPORAL = float(os.environ.get("WEB_SAMV_ANALYZER_CONFIDENCE_W_TEMPORAL", "0.30"))
 WORKER_COUNT = int(os.environ.get("WEB_SAMV_WORKERS", "0"))
+VIDEO_WARNING_CONTEXT_FRAMES = int(os.environ.get("WEB_SAMV_VIDEO_WARNING_CONTEXT_FRAMES", "24"))
+VIDEO_WARNING_CONTEXT_SEC = float(os.environ.get("WEB_SAMV_VIDEO_WARNING_CONTEXT_SEC", "6.0"))
 
 ROOT = Path(__file__).resolve().parent.parent
 FOLDERS_ROOT = (ROOT / "storage" / "folders").resolve()
