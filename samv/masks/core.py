@@ -280,6 +280,27 @@ def mask_for_main_id(instances: list[dict], main_prompt: str, main_id: int, h: i
     for oid, mask in instance_group_by_label(instances, main_prompt, h, w):
         if int(oid) == int(main_id):
             return mask
+    return mask_for_main_id_by_object_id(instances, main_id, h, w)
+
+
+def mask_for_main_id_by_object_id(
+    instances: list[dict],
+    main_id: int,
+    h: int,
+    w: int,
+) -> np.ndarray | None:
+    """Маска по object_id, если метка main_prompt не совпала."""
+    for inst in instances:
+        if not isinstance(inst, dict):
+            continue
+        try:
+            if int(inst.get("object_id", -1)) != int(main_id):
+                continue
+        except Exception:
+            continue
+        mask = mask_from_rle_row_major(inst.get("mask", {}), h, w)
+        if mask is not None and mask.any():
+            return mask
     return None
 
 

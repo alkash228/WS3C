@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from samv.analyzer.paths import ensure_unified_analyzer_result
+from samv.analyzer.paths import ensure_unified_analyzer_result, resolve_mask_main_prompt
 from samv.storage.folders import load_folder_payload
 from samv.tasks import task_progress, task_set
 from samv.video.builder import build_warning_video
@@ -26,9 +26,9 @@ def run_video_build(folder: str, main_id: int | None, colorful_masks: bool = Fal
         warnings = analysis_payload.get("warnings")
         if not isinstance(warnings, list):
             warnings = []
-        main_prompt = str(analysis_payload.get("main_prompt", "") or "").strip()
+        main_prompt = resolve_mask_main_prompt(folder_path, analysis_payload, data_payload)
         if not main_prompt:
-            raise RuntimeError("main_prompt missing in analyzer_result.json")
+            raise RuntimeError("mask main prompt not resolved (expected human or meta)")
 
         clip_count = 0
         seen: set[tuple[int, int]] = set()

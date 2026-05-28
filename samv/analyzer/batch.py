@@ -4,7 +4,11 @@ import datetime as dt
 import json
 from pathlib import Path
 
-from samv.analyzer.paths import analyzer_result_path, ensure_unified_analyzer_result
+from samv.analyzer.paths import (
+    analyzer_result_path,
+    ensure_unified_analyzer_result,
+    resolve_mask_main_prompt,
+)
 from samv.analyzer.runner import run_analysis
 from samv.inf.scenarios import get_enabled_scenarios, scenario_to_analyzer, scenario_violation_label, write_scenario_meta
 from samv.tasks import task_progress, task_set
@@ -119,10 +123,12 @@ def run_all_scenarios_for_folder(
 
     analysis_dir = folder_path / "analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    mask_main = resolve_mask_main_prompt(folder_path, None, payload)
     unified = {
         "schema": "samv_mask_analyzer_v1",
         "folder": folder,
         "main_prompt": "multi",
+        "mask_main_prompt": mask_main,
         "linked_prompts": [],
         "frames_checked": int(merged_frames_checked),
         "frames_with_main": int(merged_frames_with_main),

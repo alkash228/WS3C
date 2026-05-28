@@ -87,6 +87,8 @@ def render_clip_frame_job(args: tuple) -> tuple[int, str] | None:
         main_mask = mask_for_main_id(inst, main_prompt, int(main_id), h, w)
         if main_mask is not None:
             frame = draw_danger_frame(frame, main_mask, list(reasons))
+        elif list(reasons):
+            frame = draw_danger_frame(frame, np.zeros((h, w), dtype=bool), list(reasons))
         if frame.shape[0] != h_enc or frame.shape[1] != w_enc:
             frame = cv2.resize(frame, (w_enc, h_enc), interpolation=cv2.INTER_LINEAR)
         out_jpg = Path(tmp_dir) / f"frame_{int(seq):06d}.jpg"

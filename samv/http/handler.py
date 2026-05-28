@@ -34,7 +34,11 @@ from samv.inf.catalog import (
     read_inf_list,
     write_inf_list,
 )
-from samv.analyzer.paths import analyzer_result_path, ensure_unified_analyzer_result
+from samv.analyzer.paths import (
+    analyzer_result_path,
+    ensure_unified_analyzer_result,
+    resolve_mask_main_prompt,
+)
 from samv.inf.api_prompt import get_api_prompt, read_api_prompt, write_api_prompt
 from samv.inf.scenarios import (
     add_scenario,
@@ -572,10 +576,12 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             folder_path, _, _ = load_folder_payload(folder_name)
             analysis_dir = folder_path / "analysis"
             analysis_dir.mkdir(parents=True, exist_ok=True)
+            mask_main = resolve_mask_main_prompt(folder_path, None, None)
             unified = {
                 "schema": "samv_mask_analyzer_v1",
                 "folder": folder_name,
                 "main_prompt": "multi",
+                "mask_main_prompt": mask_main,
                 "linked_prompts": [],
                 "frames_checked": int(merged_frames_checked),
                 "frames_with_main": int(merged_frames_with_main),

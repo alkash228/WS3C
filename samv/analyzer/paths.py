@@ -33,6 +33,65 @@ def list_scenario_analysis_ids(folder_path: Path) -> list[str]:
     return out
 
 
+def resolve_mask_main_prompt(
+    folder_path: Path,
+    analysis_payload: dict | None = None,
+    data_payload: dict | None = None,
+) -> str:
+    """
+    Промпт основного объекта для отрисовки масок в warning-видео.
+
+    В объединённом результате main_prompt может быть «multi» — тогда берём
+    analyzer_main из meta, api_prompt или первого включённого сценария INF.
+    """
+    if isinstance(analysis_payload, dict):
+        explicit = str(analysis_payload.get("mask_main_prompt", "") or "").strip()
+        if explicit:
+            return explicit
+        raw = str(analysis_payload.get("main_prompt", "") or "").strip()
+        if raw and raw.lower() != "multi":
+            return raw
+
+    from samv.inf.scenarios import (
+        analyzer_params_for_folder,
+        get_enabled_scenarios,
+        read_folder_meta,
+        scenario_to_analyzer,
+    )
+    from samv.masks.core import label_segments
+
+    try:
+        main, _ = analyzer_params_for_folder(folder_path, data_payload, scenario_id=None)
+        if main and main.lower() != "multi":
+            return main
+    except Exception:
+        pass
+
+    meta = read_folder_meta(folder_path)
+    if meta:
+        main_meta = str(meta.get("analyzer_main", "") or "").strip()
+        if main_meta and main_meta.lower() != "multi":
+            return main_meta
+        api_prompt = str(meta.get("api_prompt", "") or "").strip()
+        if api_prompt:
+            parts = label_segments(api_prompt)
+            if parts:
+                return parts[0]
+
+    for scenario in get_enabled_scenarios():
+        chain = str(scenario.get("prompt", "") or "").strip()
+        if not chain:
+            continue
+        try:
+            main, _ = scenario_to_analyzer(chain)
+            if main:
+                return main
+        except Exception:
+            continue
+
+    return "human"
+
+
 def resolve_scenario_id(folder_path: Path, scenario_id: str | None) -> str | None:
     """Выбрать сценарий: явный id, единственный в by_scenario, или None (legacy)."""
     sid = str(scenario_id or "").strip()
@@ -109,10 +168,13 @@ def ensure_unified_analyzer_result(folder_path: Path) -> Path | None:
     if last_payload is None:
         return None
 
+    mask_main = resolve_mask_main_prompt(folder_path, last_payload, None)
+
     merged = {
         "schema": "samv_mask_analyzer_v1",
         "folder": str(folder_path.name),
         "main_prompt": "multi",
+        "mask_main_prompt": mask_main,
         "linked_prompts": [],
         "frames_checked": int(frames_checked),
         "frames_with_main": int(frames_with_main),

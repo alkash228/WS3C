@@ -16,8 +16,7 @@ def collect_clip_items(
 ) -> list[tuple[int, int, list[str]]]:
 
     """Кадры с нарушениями для ролика."""
-    clip_items: list[tuple[int, int, list[str]]] = []
-    seen: set[tuple[int, int]] = set()
+    by_key: dict[tuple[int, int], list[str]] = {}
     for witem in warnings:
         if not isinstance(witem, dict):
             continue
@@ -35,12 +34,17 @@ def collect_clip_items(
         if fidx < 0:
             continue
         key = (fidx, mid)
-        if key in seen:
-            continue
-        seen.add(key)
         reasons = witem.get("reasons")
-        clip_items.append((fidx, mid, reasons if isinstance(reasons, list) else []))
-    clip_items.sort(key=lambda x: x[0])
+        rows = [str(x) for x in reasons if isinstance(reasons, list) and str(x or "").strip()]
+        viol = str(witem.get("violation_label", "") or "").strip()
+        if viol:
+            rows.insert(0, viol)
+        if key not in by_key:
+            by_key[key] = []
+        for r in rows:
+            if r not in by_key[key]:
+                by_key[key].append(r)
+    clip_items = [(fidx, mid, rs) for (fidx, mid), rs in sorted(by_key.items(), key=lambda x: x[0][0])]
     return clip_items
 
 
