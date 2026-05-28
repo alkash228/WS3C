@@ -26,34 +26,9 @@
       <section id="main-tab" class="tab-pane">
         <section class="card">
           <header class="card-head">
-            <h2>Подключение API</h2>
-          </header>
-          <div class="api-row">
-            <label class="field-grow">
-              <span class="field-label">Базовый URL</span>
-              <input id="api-base-input" type="url" placeholder="http://127.0.0.1:8000" />
-            </label>
-            <div class="btn-group">
-              <button id="api-connect-btn" type="button" class="btn-primary">Подключить</button>
-              <button id="api-check-btn" type="button" class="btn-secondary">Проверить</button>
-            </div>
-          </div>
-          <p id="api-status" class="status-line muted mono"></p>
-        </section>
-
-        <section class="card">
-          <header class="card-head">
             <h2>Обработка видео</h2>
           </header>
           <form id="process-form" class="form-grid">
-            <div class="span-2 scenario-active-box" id="active-scenario-box">
-              <span class="field-label">Промпт SAM API (INF)</span>
-              <p id="main-api-prompt" class="mono small muted">—</p>
-              <span class="field-label">Сценарии анализатора (INF)</span>
-              <ul id="enabled-scenarios-list" class="enabled-scenarios-list muted small"></ul>
-              <p id="active-scenario-split" class="small muted"></p>
-              <p class="hint">Промпт API задаётся в «Справочник». Сценарии — только цепочки для анализатора после инференса.</p>
-            </div>
             <label class="span-2">
               <span class="field-label">Видеофайл</span>
               <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v" required />
@@ -70,7 +45,6 @@
             <h2>Папки проектов</h2>
             <button id="refresh-btn" type="button" class="btn-secondary btn-sm">Обновить</button>
           </header>
-          <p id="root-hint" class="status-line muted mono"></p>
           <div id="list" class="list-stack"></div>
         </section>
 
@@ -81,14 +55,6 @@
               <p class="muted small" id="an-folder">Папка не выбрана</p>
             </div>
           </header>
-
-          <div class="scenario-readonly" id="folder-scenario-box">
-            <p class="field-label">Параметры анализатора</p>
-            <p id="folder-api-prompt" class="mono small muted">—</p>
-            <p id="folder-scenario-prompt" class="mono small muted">—</p>
-            <p id="folder-scenario-main" class="small"></p>
-            <p id="folder-scenario-linked" class="small muted"></p>
-          </div>
 
           <div class="toolbar">
             <button id="run-analysis-btn" type="button" class="btn-primary" disabled>Запустить анализ</button>
@@ -147,6 +113,7 @@
             </div>
           </div>
         </section>
+
       </section>
 
       <section id="stats-tab" class="tab-pane hidden">
@@ -172,6 +139,100 @@
             </div>
             <p id="inf-root-hint" class="inf-path mono"></p>
           </header>
+          <article class="inf-card inf-card-wide" data-kind="api-connection">
+            <div class="inf-card-head">
+              <span class="inf-card-icon" aria-hidden="true">🔌</span>
+              <div>
+                <h3>Подключение к SAM API</h3>
+              </div>
+            </div>
+            <div class="api-row">
+              <label class="field-grow">
+                <span class="field-label">Базовый URL</span>
+                <input id="api-base-input" type="url" placeholder="http://127.0.0.1:8000" />
+              </label>
+              <div class="btn-group">
+                <button id="api-connect-btn" type="button" class="btn-primary">Сохранить</button>
+                <button id="api-check-btn" type="button" class="btn-secondary">Проверить</button>
+              </div>
+            </div>
+            <p id="api-status" class="status-line muted mono"></p>
+          </article>
+          <article class="inf-card inf-card-wide" data-kind="api-prompt">
+            <div class="inf-card-head">
+              <span class="inf-card-icon" aria-hidden="true">◎</span>
+              <div>
+                <h3>Промпт SAM API (INF)</h3>
+              </div>
+            </div>
+            <p class="muted small">Отправляется в <code>/infer/video</code> при обработке. Должен включать все классы, нужные сценариям анализатора.</p>
+            <div class="inf-config-summary">
+              <span class="field-label">Текущий промпт</span>
+              <p id="inf-api-prompt-display" class="mono small">—</p>
+            </div>
+            <label class="inf-list-label">
+              <span class="field-label">Редактирование</span>
+              <textarea id="inf-api-prompt" class="inf-textarea" rows="3" placeholder="human . person head . helmet . vest"></textarea>
+            </label>
+            <div class="inf-toolbar">
+              <button id="inf-api-prompt-save" type="button" class="btn-primary btn-sm">Сохранить промпт API</button>
+            </div>
+          </article>
+          <article class="inf-card inf-card-wide" data-kind="scenarios">
+            <div class="inf-card-head">
+              <span class="inf-card-icon" aria-hidden="true">⚙</span>
+              <div>
+                <h3>Сценарии анализатора (INF)</h3>
+                <span id="inf-scenarios-count" class="inf-count">0</span>
+              </div>
+            </div>
+            <p class="muted small">Галочки — какие сценарии запустить после инференса (одна папка, по очереди). Цепочки — только для анализатора, не для API.</p>
+            <div class="inf-config-summary">
+              <span class="field-label">Включённые сценарии</span>
+              <ul id="inf-enabled-scenarios-summary" class="enabled-scenarios-list muted small"></ul>
+              <p id="inf-scenario-split" class="small muted"></p>
+              <p class="hint">Промпт API задаётся выше. Сценарии — только цепочки для анализатора после инференса.</p>
+            </div>
+            <div id="inf-scenarios-list" class="scenarios-list"></div>
+            <div class="inf-toolbar inf-toolbar-scenario">
+              <input id="inf-scenario-title" type="text" placeholder="Человек без жилета" />
+              <input id="inf-scenario-prompt" type="text" placeholder="human . vest" class="span-2" title="Цепочка для анализатора, не для API" />
+              <button id="inf-scenario-add" type="button" class="btn-primary btn-sm">Добавить</button>
+              <button id="inf-scenario-del" type="button" class="btn-ghost btn-sm">Удалить</button>
+            </div>
+          </article>
+          <article class="inf-card inf-card-wide" data-kind="video-processing">
+            <div class="inf-card-head">
+              <span class="inf-card-icon" aria-hidden="true">🎛</span>
+              <div>
+                <h3>Обработка видео (настройки)</h3>
+              </div>
+            </div>
+            <p class="muted small">Параметры инференса и подготовки кадров. Применяются при нажатии «Обработать видео» на вкладке «Работа».</p>
+            <div class="form-grid">
+              <label class="check-field span-2">
+                <input id="fast-x2" type="checkbox" />
+                <span>D/2 — даунскейл перед инференсом, затем апскейл масок</span>
+              </label>
+              <label>
+                <span class="field-label">Делитель D/N</span>
+                <input id="scale-div" type="number" min="1" step="0.1" value="1" />
+              </label>
+              <label class="check-field">
+                <input id="fps-half" type="checkbox" />
+                <span>FPS/2 — прореживание кадров</span>
+              </label>
+              <label>
+                <span class="field-label">Делитель FPS/N</span>
+                <input id="fps-div" type="number" min="1" step="1" value="1" />
+              </label>
+              <label class="span-2">
+                <span class="field-label">Нарезка видео, сек (0 — без нарезки)</span>
+                <input id="video-part-sec" type="number" min="0" step="1" value="0" />
+                <span class="hint">Длинное видео режется на части; результаты объединяются в один JSON.</span>
+              </label>
+            </div>
+          </article>
           <div class="inf-grid">
             <article class="inf-card" data-kind="buildings">
               <div class="inf-card-head">
@@ -228,71 +289,6 @@
               </div>
             </article>
           </div>
-          <article class="inf-card inf-card-wide" data-kind="api-prompt">
-            <div class="inf-card-head">
-              <span class="inf-card-icon" aria-hidden="true">◎</span>
-              <div>
-                <h3>Промпт SAM API</h3>
-              </div>
-            </div>
-            <p class="muted small">Отправляется в <code>/infer/video</code> при обработке. Должен включать все классы, нужные сценариям анализатора.</p>
-            <label class="inf-list-label">
-              <span class="field-label">Текст промпта</span>
-              <textarea id="inf-api-prompt" class="inf-textarea" rows="3" placeholder="human . person . head . helmet . vest"></textarea>
-            </label>
-            <div class="inf-toolbar">
-              <button id="inf-api-prompt-save" type="button" class="btn-primary btn-sm">Сохранить промпт API</button>
-            </div>
-          </article>
-          <article class="inf-card inf-card-wide" data-kind="scenarios">
-            <div class="inf-card-head">
-              <span class="inf-card-icon" aria-hidden="true">⚙</span>
-              <div>
-                <h3>Сценарии анализа</h3>
-                <span id="inf-scenarios-count" class="inf-count">0</span>
-              </div>
-            </div>
-            <p class="muted small">Галочки — какие сценарии анализатора запустить после инференса (одна папка, по очереди).</p>
-            <div id="inf-scenarios-list" class="scenarios-list"></div>
-            <div class="inf-toolbar inf-toolbar-scenario">
-              <input id="inf-scenario-title" type="text" placeholder="Человек без жилета" />
-              <input id="inf-scenario-prompt" type="text" placeholder="human . vest" class="span-2" title="Цепочка для анализатора, не для API" />
-              <button id="inf-scenario-add" type="button" class="btn-primary btn-sm">Добавить</button>
-              <button id="inf-scenario-del" type="button" class="btn-ghost btn-sm">Удалить</button>
-            </div>
-          </article>
-          <article class="inf-card inf-card-wide" data-kind="video-processing">
-            <div class="inf-card-head">
-              <span class="inf-card-icon" aria-hidden="true">🎛</span>
-              <div>
-                <h3>Обработка видео (настройки)</h3>
-              </div>
-            </div>
-            <p class="muted small">Параметры инференса и подготовки кадров. Применяются при нажатии «Обработать видео» на вкладке «Работа».</p>
-            <div class="form-grid">
-              <label class="check-field span-2">
-                <input id="fast-x2" type="checkbox" />
-                <span>D/2 — даунскейл перед инференсом, затем апскейл масок</span>
-              </label>
-              <label>
-                <span class="field-label">Делитель D/N</span>
-                <input id="scale-div" type="number" min="1" step="0.1" value="1" />
-              </label>
-              <label class="check-field">
-                <input id="fps-half" type="checkbox" />
-                <span>FPS/2 — прореживание кадров</span>
-              </label>
-              <label>
-                <span class="field-label">Делитель FPS/N</span>
-                <input id="fps-div" type="number" min="1" step="1" value="1" />
-              </label>
-              <label class="span-2">
-                <span class="field-label">Нарезка видео, сек (0 — без нарезки)</span>
-                <input id="video-part-sec" type="number" min="0" step="1" value="0" />
-                <span class="hint">Длинное видео режется на части; результаты объединяются в один JSON.</span>
-              </label>
-            </div>
-          </article>
           <article class="inf-card inf-card-wide card-debug" data-kind="debug">
             <header class="card-head card-head-split">
               <h3>Отладка</h3>

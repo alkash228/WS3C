@@ -82,6 +82,71 @@ let detectedViolationsByHumanId = {};
 let builtWarningVideoUrl = "";
 let builtWarningVideoByHumanId = {};
 const WARNING_VIDEO_STATE_PREFIX = "samv.warning_video_state:";
+let accessRole = "guest";
+let accessClientIp = "";
+
+function setTabVisible(tabId, visible) {
+  const btn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+  const pane = document.getElementById(tabId);
+  if (btn) btn.style.display = visible ? "" : "none";
+  if (pane && !visible) pane.classList.add("hidden");
+}
+
+function setAccessDeniedOverlay(visible) {
+  let el = document.getElementById("access-denied-overlay");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "access-denied-overlay";
+    el.className = "access-denied-overlay hidden";
+    el.innerHTML = `
+      <div class="access-denied-box">
+        <h2>НЕТ ДОСТУПА</h2>
+        <p>Ваш IP не добавлен в список разрешённых.</p>
+      </div>
+    `;
+    document.body.appendChild(el);
+  }
+  el.classList.toggle("hidden", !visible);
+}
+
+function applyAccessUi() {
+  if (accessRole === "admin") {
+    setAccessDeniedOverlay(false);
+    setTabVisible("main-tab", true);
+    setTabVisible("stats-tab", true);
+    setTabVisible("inf-tab", true);
+    return;
+  }
+  if (accessRole === "user") {
+    setAccessDeniedOverlay(false);
+    setTabVisible("main-tab", true);
+    setTabVisible("stats-tab", false);
+    setTabVisible("inf-tab", false);
+    activateTab("main-tab");
+    return;
+  }
+  setAccessDeniedOverlay(true);
+  setTabVisible("main-tab", false);
+  setTabVisible("stats-tab", false);
+  setTabVisible("inf-tab", false);
+  const st = document.getElementById("status");
+  if (st) st.textContent = "Доступ запрещён: ваш IP не добавлен в admins/users.";
+}
+
+async function loadAccessMe() {
+  try {
+    const out = await apiGet("/api/access/me");
+    if (!out.ok) return;
+    accessRole = String(out.role || "guest").trim() || "guest";
+    accessClientIp = String(out.client_ip || "").trim();
+    debugLog("auth", `role=${accessRole}${accessClientIp ? ` ip=${accessClientIp}` : ""}`);
+  } catch (e) {
+    accessRole = "guest";
+    debugLog("err", `access/me: ${e?.message || e}`);
+  } finally {
+    applyAccessUi();
+  }
+}
 
 function videoStateStorageKey(folder) {
   const name = String(folder || "").trim();
@@ -1007,15 +1072,7 @@ function renderWarnings(items) {
       </article>
     `;
   }).join("");
-  const mainLbl = esc(analysisPrompts.main || getCurrentPrompts().main || "—");
-  const violFromRows = rows.map((w) => violationLabelForWarning(w)).filter(Boolean);
-  const violUnique = [...new Set(violFromRows)];
-  const violLine = violUnique.length
-    ? `<p class="warnings-intro muted small">Зафиксировано: <strong>${esc(violUnique.join("; "))}</strong></p>`
-    : "";
   box.innerHTML = `
-    <p class="warnings-intro muted small">Основной промт: <strong>${mainLbl}</strong> · всего CONFIRMED WARNING: <strong>${rows.length}</strong></p>
-    ${violLine}
     ${blocks}
   `;
   applyRevealAnimation();
@@ -1065,8 +1122,8 @@ function getActiveScenario() {
   return rows[0] || null;
 }
 
-function renderMainApiPrompt() {
-  const el = document.getElementById("main-api-prompt");
+function renderInfApiPromptDisplay() {
+  const el = document.getElementById("inf-api-prompt-display");
   if (el) el.textContent = apiPromptText || "— не задан —";
 }
 
@@ -1076,7 +1133,7 @@ async function loadApiPrompt() {
   apiPromptText = String(out.prompt || "").trim();
   const inp = document.getElementById("inf-api-prompt");
   if (inp) inp.value = apiPromptText;
-  renderMainApiPrompt();
+  renderInfApiPromptDisplay();
 }
 
 async function saveApiPrompt() {
@@ -1093,20 +1150,20 @@ async function saveApiPrompt() {
     return;
   }
   apiPromptText = String(out.prompt || "").trim();
-  renderMainApiPrompt();
+  renderInfApiPromptDisplay();
   if (st) st.textContent = "Промпт SAM API сохранён.";
   debugLog("inf", `API prompt: ${apiPromptText}`);
 }
 
-function renderActiveScenarioBox() {
+function renderInfScenarioSummary() {
   const enabled = getEnabledScenarios();
-  const listEl = document.getElementById("enabled-scenarios-list");
-  const splitEl = document.getElementById("active-scenario-split");
-  renderMainApiPrompt();
+  const listEl = document.getElementById("inf-enabled-scenarios-summary");
+  const splitEl = document.getElementById("inf-scenario-split");
+  renderInfApiPromptDisplay();
   if (!listEl) return;
   if (!enabled.length) {
     listEl.innerHTML = "<li>— нет включённых —</li>";
-    if (splitEl) splitEl.textContent = "Отметьте сценарии анализатора на вкладке «Справочник».";
+    if (splitEl) splitEl.textContent = "Отметьте сценарии галочками ниже.";
     return;
   }
   listEl.innerHTML = enabled.map((sc) => {
@@ -1182,7 +1239,7 @@ async function loadScenarios() {
     active_id: String(out.active_id || "").trim(),
   };
   renderInfScenariosList();
-  renderActiveScenarioBox();
+  renderInfScenarioSummary();
 }
 
 async function setScenarioEnabled(id, enabled) {
@@ -1198,7 +1255,7 @@ async function setScenarioEnabled(id, enabled) {
     active_id: String(out.active_id || "").trim(),
   };
   renderInfScenariosList();
-  renderActiveScenarioBox();
+  renderInfScenarioSummary();
   if (st) st.textContent = enabled ? "Сценарий включён." : "Сценарий выключен.";
   debugLog("inf", `Сценарий ${id}: enabled=${enabled}`);
 }
@@ -1224,7 +1281,7 @@ async function addScenario() {
   document.getElementById("inf-scenario-title").value = "";
   document.getElementById("inf-scenario-prompt").value = "";
   renderInfScenariosList();
-  renderActiveScenarioBox();
+  renderInfScenarioSummary();
   if (st) st.textContent = "Сценарий добавлен.";
 }
 
@@ -1241,27 +1298,12 @@ async function deleteScenario(id) {
     active_id: String(out.active_id || "").trim(),
   };
   renderInfScenariosList();
-  renderActiveScenarioBox();
+  renderInfScenarioSummary();
   if (st) st.textContent = "Сценарий удалён.";
 }
 
 function updateFolderScenarioReadonly() {
-  const apiEl = document.getElementById("folder-api-prompt");
-  const promptEl = document.getElementById("folder-scenario-prompt");
-  const mainEl = document.getElementById("folder-scenario-main");
-  const linkedEl = document.getElementById("folder-scenario-linked");
-  const p = folderAnalyzerParams;
-  if (apiEl) apiEl.textContent = p.api_prompt ? `SAM API: ${p.api_prompt}` : "SAM API: —";
-  if (promptEl) {
-    const viol = p.violation_label ? ` · нарушение: ${p.violation_label}` : "";
-    promptEl.textContent = p.prompt ? `Цепочка анализатора: ${p.prompt}${viol}` : (p.violation_label ? `Нарушение: ${p.violation_label}` : "—");
-  }
-  if (mainEl) mainEl.textContent = p.main ? `Основной: ${p.main}` : "Основной: —";
-  if (linkedEl) {
-    linkedEl.textContent = p.linked.length
-      ? `Связанные: ${p.linked.join(" → ")}`
-      : "Связанные: —";
-  }
+  // Блок параметров анализатора на вкладке "Работа" отключен по UX-требованию.
 }
 
 async function loadInfOptions() {
@@ -1510,8 +1552,6 @@ async function refreshList() {
     box.innerHTML = `<p class='err'>Ошибка: ${esc(res.error || "unknown")}</p>`;
     return;
   }
-  const rootHint = document.getElementById("root-hint");
-  if (rootHint) rootHint.textContent = `Папки читаются из: ${res.root || "-"}`;
   const items = Array.isArray(res.items) ? res.items : [];
   if (!items.length) {
     box.innerHTML = "<p class='muted'>Папок пока нет.</p>";
@@ -1584,13 +1624,14 @@ async function refreshApiStatus() {
   el.textContent = "API: проверка...";
   try {
     const st = await apiGet("/api/status");
-    if (!st.ok) {
+    const base = st.api_base || "-";
+    const inp = document.getElementById("api-base-input");
+    // Показываем сохраненный адрес всегда, даже когда API временно недоступен.
+    if (inp && base && base !== "-") inp.value = base;
+    if (!Object.prototype.hasOwnProperty.call(st, "ok")) {
       el.textContent = "API: статус недоступен";
       return;
     }
-    const base = st.api_base || "-";
-    const inp = document.getElementById("api-base-input");
-    if (inp && base && inp.value.trim() === "") inp.value = base;
     if (st.error) {
       el.textContent = `API: ${base} | нет связи (${st.error})`;
       return;
@@ -1987,9 +2028,14 @@ document.addEventListener("visibilitychange", () => {
 
 (async () => {
   debugLog("ui", "WEB samv загружен");
-  refreshApiStatus();
-  await loadInfOptions();
-  await loadApiPrompt();
-  await refreshList();
+  await loadAccessMe();
+  if (accessRole === "admin" || accessRole === "user") {
+    refreshApiStatus();
+  }
+  if (accessRole === "admin" || accessRole === "user") {
+    await loadInfOptions();
+    await loadApiPrompt();
+    await refreshList();
+  }
   applyRevealAnimation();
 })();

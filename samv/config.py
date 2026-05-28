@@ -43,6 +43,8 @@ INF_CONTRACTORS_FILE = INF_ROOT / "contractors.json"
 INF_CONTRACTS_FILE = INF_ROOT / "contracts.json"
 INF_SCENARIOS_FILE = INF_ROOT / "scenarios.json"
 INF_API_PROMPT_FILE = INF_ROOT / "api_prompt.json"
+INF_API_BASE_FILE = INF_ROOT / "api_base.json"
+INF_ACCESS_ROLES_FILE = INF_ROOT / "access_roles.json"
 
 INF_DEFAULT_API_PROMPT = "human . person . head . helmet . vest"
 

@@ -148,6 +148,39 @@ body {
   display: none;
 }
 
+.access-denied-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 9, 9, 0.92);
+  backdrop-filter: blur(2px);
+}
+
+.access-denied-box {
+  min-width: min(92vw, 560px);
+  padding: 28px 24px;
+  border: 2px solid #ffe16a;
+  background: #121212;
+  text-align: center;
+  box-shadow: 0 0 0 3px #000;
+}
+
+.access-denied-box h2 {
+  margin: 0 0 10px;
+  font-size: clamp(1.8rem, 5vw, 2.8rem);
+  letter-spacing: 0.06em;
+  color: #ffe16a;
+}
+
+.access-denied-box p {
+  margin: 0;
+  color: #f4f4f4;
+  font-size: 1rem;
+}
+
 /* —— Cards —— */
 .card {
   background: var(--surface);
@@ -912,11 +945,26 @@ button:disabled {
   margin-bottom: 4px;
 }
 
-.scenario-active-box {
+.inf-config-summary {
   padding: 12px 14px;
+  margin-bottom: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
+}
+
+.inf-config-summary .field-label {
+  display: block;
+  margin-top: 8px;
+}
+
+.inf-config-summary .field-label:first-child {
+  margin-top: 0;
+}
+
+.inf-config-summary #inf-api-prompt-display {
+  margin: 4px 0 0;
+  word-break: break-word;
 }
 
 .scenario-active-title {
@@ -1340,34 +1388,29 @@ body::after {
 }
 
 #main-tab {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+  position: relative;
+  width: min(100%, 980px);
+  margin-inline: auto;
+  padding-right: 0;
+  padding-bottom: 32px;
 }
 
 #main-tab > .card {
   margin: 0;
   padding: 14px;
+  position: relative;
+  z-index: 1;
 }
 
-#main-tab > .card:nth-of-type(1) {
-  grid-column: 1 / 8;
+#main-tab::before {
+  content: none;
 }
 
-#main-tab > .card:nth-of-type(2) {
-  grid-column: 8 / 13;
-}
-
-#main-tab > .card:nth-of-type(3) {
-  grid-column: 1 / 5;
-}
-
-#main-tab > .card:nth-of-type(4) {
-  grid-column: 5 / 13;
-}
-
-#main-tab > .card:nth-of-type(5) {
-  grid-column: 1 / 13;
+#main-tab::after {
+  content: none;
 }
 
 .card-head {
@@ -1474,21 +1517,18 @@ textarea {
 
 @media (max-width: 1100px) {
   #main-tab {
-    grid-template-columns: 1fr 1fr;
+    max-width: 100%;
+    margin-inline: 0;
+    padding-right: 0;
+    padding-bottom: 24px;
   }
-  #main-tab > .card:nth-of-type(1),
-  #main-tab > .card:nth-of-type(2),
-  #main-tab > .card:nth-of-type(3),
-  #main-tab > .card:nth-of-type(4),
-  #main-tab > .card:nth-of-type(5) {
-    grid-column: auto;
+  #main-tab::before,
+  #main-tab::after {
+    display: none;
   }
 }
 
 @media (max-width: 720px) {
-  #main-tab {
-    grid-template-columns: 1fr;
-  }
   .warn-card {
     grid-template-columns: 1fr;
   }
@@ -1610,6 +1650,31 @@ body::before {
   }
 }
 
+@keyframes skylinePulse {
+  0%,
+  100% {
+    opacity: 0.56;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 0.8;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes craneSway {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  35% {
+    transform: rotate(-2.4deg);
+  }
+  70% {
+    transform: rotate(1.8deg);
+  }
+}
+
 .tab-btn {
   position: relative;
   overflow: hidden;
@@ -1710,6 +1775,248 @@ textarea:focus {
   filter: blur(0);
 }
 
+/* --- Design upgrade v5: cinematic construction UI --- */
+:root {
+  --motion-fast: 180ms;
+  --motion-mid: 280ms;
+  --motion-slow: 520ms;
+}
+
+.page {
+  position: relative;
+}
+
+body {
+  font-size: 15px;
+  line-height: 1.56;
+  text-rendering: optimizeLegibility;
+}
+
+.app-title {
+  font-size: 1.4rem;
+}
+
+.card-head h2 {
+  font-size: 1.1rem;
+  line-height: 1.28;
+}
+
+.field-label,
+.small,
+.muted {
+  font-size: 13px;
+  line-height: 1.44;
+}
+
+.status-line {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.page:has(#main-tab:not(.hidden))::after {
+  content: none;
+}
+
+#main-tab {
+  isolation: isolate;
+}
+
+#main-tab > .card {
+  border-radius: 4px;
+  background: linear-gradient(180deg, #fbfaf5 0%, #f3f1e7 100%);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.08);
+  animation: cardLiftIn var(--motion-slow) var(--ease-out-soft) both;
+}
+
+#main-tab > .card:nth-of-type(1) { animation-delay: 40ms; }
+#main-tab > .card:nth-of-type(2) { animation-delay: 100ms; }
+#main-tab > .card:nth-of-type(3) { animation-delay: 160ms; }
+
+.card:hover,
+.inf-card:hover,
+.warn-card:hover {
+  transform: translateY(-5px) scale(1.004);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.13);
+}
+
+.card-head h2 {
+  position: relative;
+  overflow: hidden;
+}
+
+.card-head h2::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-105%);
+  background: linear-gradient(110deg, transparent 30%, rgba(255, 225, 106, 0.45) 50%, transparent 70%);
+  animation: titleSweep 4.8s ease-in-out infinite;
+}
+
+.btn-primary,
+.btn-secondary,
+.btn-ghost {
+  position: relative;
+  overflow: hidden;
+  transition: transform var(--motion-fast) var(--ease-emphasized), box-shadow var(--motion-mid) var(--ease-emphasized), filter var(--motion-mid) var(--ease-emphasized), background-color var(--motion-mid) var(--ease-emphasized), color var(--motion-mid) var(--ease-emphasized), border-color var(--motion-mid) var(--ease-emphasized);
+}
+
+.btn-primary::before,
+.btn-secondary::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -140%;
+  width: 120%;
+  height: 100%;
+  background: linear-gradient(105deg, transparent 20%, rgba(255, 255, 255, 0.55) 50%, transparent 80%);
+  transition: left 620ms var(--ease-out-soft);
+}
+
+.btn-primary:hover:not(:disabled)::before,
+.btn-secondary:hover:not(:disabled)::before {
+  left: 130%;
+}
+
+input,
+select,
+textarea {
+  background: #fffef9;
+}
+
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: #000;
+  box-shadow: 0 0 0 2px rgba(255, 225, 106, 0.2);
+}
+
+.check-field {
+  transition: transform var(--motion-mid) var(--ease-emphasized), box-shadow var(--motion-mid) var(--ease-emphasized), border-color var(--motion-mid) var(--ease-emphasized), background-color var(--motion-mid) var(--ease-emphasized);
+}
+
+.check-field:hover {
+  transform: translateY(-2px);
+  border-color: #000;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.1);
+}
+
+.item {
+  transition: transform var(--motion-mid) var(--ease-emphasized), background-color var(--motion-mid) var(--ease-emphasized), border-color var(--motion-mid) var(--ease-emphasized);
+}
+
+.item:hover {
+  transform: translateX(2px);
+}
+
+.warn-preview-img {
+  transition: transform 420ms var(--ease-out-soft), filter 420ms var(--ease-out-soft);
+}
+
+.warn-preview-img:hover {
+  transform: scale(1.02);
+  filter: saturate(112%) contrast(105%);
+}
+
+.video-shell {
+  position: relative;
+  overflow: hidden;
+}
+
+.video-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(120deg, transparent 32%, rgba(255, 225, 106, 0.18) 50%, transparent 68%);
+  transform: translateX(-105%);
+  animation: videoSweep 6.5s ease-in-out infinite;
+}
+
+.progress .bar {
+  background-image: linear-gradient(90deg, rgba(255, 225, 106, 0.95), rgba(255, 225, 106, 0.55), rgba(255, 225, 106, 0.95));
+  background-size: 180% 100%;
+  animation: barFlow 1.8s linear infinite;
+}
+
+@keyframes cardLiftIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes titleSweep {
+  0%,
+  78%,
+  100% {
+    transform: translateX(-105%);
+  }
+  90% {
+    transform: translateX(105%);
+  }
+}
+
+@keyframes videoSweep {
+  0%,
+  78%,
+  100% {
+    transform: translateX(-105%);
+  }
+  90% {
+    transform: translateX(105%);
+  }
+}
+
+@keyframes barFlow {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 180% 0;
+  }
+}
+
+@keyframes blueprintScroll {
+  from {
+    background-position: 0 0, 0 0;
+  }
+  to {
+    background-position: 0 120px, 0 0;
+  }
+}
+
+@keyframes skylinePulse {
+  0%,
+  100% {
+    opacity: 0.52;
+    transform: translateY(0);
+    filter: saturate(95%);
+  }
+  50% {
+    opacity: 0.86;
+    transform: translateY(-5px);
+    filter: saturate(118%);
+  }
+}
+
+@keyframes craneSway {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  35% {
+    transform: rotate(-2.8deg);
+  }
+  70% {
+    transform: rotate(2.2deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1724,5 +2031,20 @@ textarea:focus {
     opacity: 1;
     transform: none;
     filter: none;
+  }
+
+  #main-tab > .card {
+    animation: none !important;
+  }
+
+  .page:has(#main-tab:not(.hidden))::after,
+  .video-shell::after,
+  .card-head h2::after {
+    display: none !important;
+  }
+
+  #main-tab::before,
+  #main-tab::after {
+    display: none !important;
   }
 }

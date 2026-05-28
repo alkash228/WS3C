@@ -60,6 +60,7 @@ from samv.storage.folders import folder_paths, invalidate_folders_cache, list_fo
 from samv.storage.folders import processing_stats_all_folders, processing_stats_for_folder
 from samv.tasks import task_get, task_set
 from samv.http.multipart import field_storage_from_request
+from samv.security.access import LOCALHOST_IPS, read_access_roles, resolve_role_by_ip
 from samv.utils import json_response, safe_name
 
 
@@ -97,6 +98,137 @@ def _analysis_all_thread_target(folder: str) -> None:
 
 
 class SamvHandler(http.server.SimpleHTTPRequestHandler):
+    def _client_ip(self) -> str:
+        """IP клиента (с учетом прокси-заголовков)."""
+        try:
+            xff = str(self.headers.get("X-Forwarded-For", "") or "").strip()
+            if xff:
+                first = xff.split(",", 1)[0].strip()
+                if first:
+                    return first
+            xri = str(self.headers.get("X-Real-IP", "") or "").strip()
+            if xri:
+                return xri
+        except Exception:
+            pass
+        try:
+            return str((self.client_address or ("", 0))[0] or "")
+        except Exception:
+            return ""
+
+    def _request_role(self) -> str:
+        return resolve_role_by_ip(self._client_ip())
+
+    def _allowed_for_role(self, role: str, method: str, path: str) -> bool:
+        if role == "admin":
+            return True
+        if role != "user":
+            return False
+        if method == "GET":
+            return path in {
+                "/api/access/me",
+                "/api/status",
+                "/api/folders",
+                "/api/analyzer/prompts",
+                "/api/analyzer/result",
+                "/api/analyzer/progress",
+                "/api/folders/stats",
+                "/api/inf/options",
+                "/api/inf/scenarios",
+                "/api/inf/api_prompt",
+                "/api/folders/meta",
+                "/__web_samv_hint.json",
+            }
+        if method == "POST":
+            return path in {
+                "/api/process_video",
+                "/api/analyzer/run",
+                "/api/analyzer/run_all",
+                "/api/analyzer/video",
+                "/api/report/generate",
+                "/api/folders/upload",
+                "/api/folders/save_processed",
+            }
+        return False
+
+    def _enforce_api_access(self, method: str, path: str) -> bool:
+        if not path.startswith("/api/"):
+            return True
+        role = self._request_role()
+        if self._allowed_for_role(role, method, path):
+            return True
+        json_response(
+            self,
+            {
+                "ok": False,
+                "error": "Access denied for this role",
+                "role": role,
+                "path": path,
+            },
+            code=403,
+        )
+        return False
+
+    def _respond_access_denied_page(self) -> None:
+        body = """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>НЕТ ДОСТУПА</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid;
+      place-items: center;
+      background: #0d0d0d;
+      color: #ffe16a;
+      font-family: "Segoe UI", Arial, sans-serif;
+      text-align: center;
+    }
+    .box {
+      border: 2px solid #ffe16a;
+      padding: 28px 24px;
+      background: #151515;
+      box-shadow: 0 0 0 3px #000;
+      width: min(92vw, 560px);
+    }
+    h1 { margin: 0 0 10px; font-size: clamp(2rem, 6vw, 3.1rem); letter-spacing: .06em; }
+    p { margin: 0; color: #f5f5f5; font-size: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>НЕТ ДОСТУПА</h1>
+    <p>Ваш IP не добавлен в список разрешённых.</p>
+  </div>
+</body>
+</html>"""
+        raw = body.encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def send_response(self, code: int, message: str | None = None) -> None:
+        """Перехватываем статус ответа для access-лога."""
+        self._last_status_code = int(code)
+        super().send_response(code, message)
+
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        """Единый access-log: IP, метод, path, статус, время."""
+        try:
+            status = int(code) if str(code).isdigit() else getattr(self, "_last_status_code", code)
+        except Exception:
+            status = code
+        started = float(getattr(self, "_request_started_at", 0.0) or 0.0)
+        duration_ms = int((time.perf_counter() - started) * 1000) if started > 0 else -1
+        method = str(getattr(self, "_request_method", "") or getattr(self, "command", "") or "-")
+        path = str(getattr(self, "_request_path", "") or getattr(self, "path", "") or "-")
+        ip = self._client_ip() or "-"
+        print(f"[HTTP] {ip} {method} {path} -> {status} ({duration_ms}ms)")
+
     def end_headers(self) -> None:
         """Заголовки ответа."""
         try:
@@ -109,9 +241,21 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """GET запросы."""
+        self._request_started_at = time.perf_counter()
+        self._request_method = "GET"
+        self._request_path = str(self.path or "")
         try:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/")
+            role = self._request_role()
+            if role == "guest" and path in ("", "/", "/index.html"):
+                self._respond_access_denied_page()
+                return
+            if path == "/api/access/me":
+                self.access_me()
+                return
+            if not self._enforce_api_access("GET", path):
+                return
             if path == "/__web_samv_hint.json":
                 json_response(
                     self,
@@ -163,8 +307,13 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         """POST запросы."""
+        self._request_started_at = time.perf_counter()
+        self._request_method = "POST"
+        self._request_path = str(self.path or "")
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        if not self._enforce_api_access("POST", path):
+            return
         try:
             if path == "/api/folders/create":
                 self.create_folder()
@@ -220,6 +369,22 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             json_response(self, {"ok": False, "error": "Not found"}, code=404)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
+
+    def access_me(self) -> None:
+        ip = self._client_ip()
+        role = self._request_role()
+        rules = read_access_roles()
+        json_response(
+            self,
+            {
+                "ok": True,
+                "role": role,
+                "client_ip": ip,
+                "localhost_admin_ips": sorted(list(LOCALHOST_IPS)),
+                "admins": list(rules.get("admins", [])),
+                "users": list(rules.get("users", [])),
+            },
+        )
 
     def read_json_body(self) -> dict:
         """Тело POST как json."""

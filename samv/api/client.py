@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 import cv2
 
 from samv.config import API_BASE, API_HOST_HINT, API_PORT_HINT, JOB_TIMEOUT_SEC, POLL_INTERVAL_SEC, VIDEO_EXTS
+from samv.inf.api_base import read_api_base, write_api_base
 from samv.masks.core import upscale_result_payload_inplace
 from samv.storage.folders import folder_paths
 from samv.utils import safe_name
@@ -30,7 +31,8 @@ def new_folder_name() -> str:
 def effective_api_base() -> str:
 
     """Откуда дергаем API — из настроек или localhost."""
-    base = str(API_BASE or "").strip().rstrip("/")
+    persisted = read_api_base()
+    base = str((persisted or {}).get("api_base", "") or API_BASE or "").strip().rstrip("/")
     if base:
         return base
     return f"http://{API_HOST_HINT}:{API_PORT_HINT}"
@@ -112,12 +114,8 @@ def set_api_base(new_base: str) -> None:
     """Меняем адрес API в рантайме."""
     global API_BASE
     base = str(new_base or "").strip().rstrip("/")
-    if not base:
-        API_BASE = ""
-        return
-    if not (base.startswith("http://") or base.startswith("https://")):
-        raise ValueError("api_base must start with http:// or https://")
-    API_BASE = base
+    saved = write_api_base(base)
+    API_BASE = str((saved or {}).get("api_base", "") or "")
 
 
 def multipart_body(fields: dict[str, str], file_field: str, file_name: str, file_bytes: bytes) -> tuple[bytes, str]:
