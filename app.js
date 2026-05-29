@@ -1707,11 +1707,24 @@ async function refreshList() {
       </div>
       <div class="row">
         <button type="button" class="btn-primary btn-sm" data-open="${esc(x.name)}">Открыть</button>
+        <button type="button" class="btn-ghost btn-sm" data-dl="${esc(x.name)}">Скачать</button>
         <button type="button" class="btn-ghost btn-sm" data-del="${esc(x.name)}">Удалить</button>
       </div>
     </article>
   `).join("");
   applyRevealAnimation();
+  box.querySelectorAll("button[data-dl]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const name = btn.getAttribute("data-dl");
+      if (!name) return;
+      const st = document.getElementById("status");
+      if (st) st.textContent = `Подготовка архива ${name}…`;
+      window.location.href = `/api/folders/download?name=${encodeURIComponent(name)}`;
+      setTimeout(() => {
+        if (st && st.textContent.startsWith("Подготовка архива")) st.textContent = "";
+      }, 8000);
+    });
+  });
   box.querySelectorAll("button[data-del]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const name = btn.getAttribute("data-del");

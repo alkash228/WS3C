@@ -59,10 +59,11 @@ from samv.masks.core import all_prompts
 from samv.reports.build import generate_report, norm_report_formats, norm_report_items
 from samv.storage.folders import folder_paths, invalidate_folders_cache, list_folders, load_folder_payload
 from samv.storage.folders import processing_stats_all_folders, processing_stats_for_folder
+from samv.storage.zip_export import build_folder_zip_archive
 from samv.tasks import task_get, task_set
 from samv.http.multipart import field_storage_from_request
 from samv.security.access import LOCALHOST_IPS, read_access_roles, resolve_role_by_ip
-from samv.utils import json_response, safe_name
+from samv.utils import file_download_response, json_response, safe_name
 
 
 def _analysis_thread_target(
@@ -306,6 +307,9 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             if path == "/api/folders/meta":
                 self.folder_meta(parsed)
                 return
+            if path == "/api/folders/download":
+                self.folder_download(parsed)
+                return
             return super().do_GET()
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
@@ -431,6 +435,27 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
         shutil.rmtree(folder)
         invalidate_folders_cache()
         json_response(self, {"ok": True, "items": list_folders()})
+
+    def folder_download(self, parsed) -> None:
+        """Скачать папку проекта архивом zip (только admin через _enforce_api_access)."""
+        qs = parse_qs(parsed.query or "")
+        name = safe_name(str((qs.get("name") or [""])[0] or ""))
+        if not name:
+            json_response(self, {"ok": False, "error": "Invalid folder name"}, code=400)
+            return
+        folder, _, _ = folder_paths(name)
+        if not folder.is_dir():
+            json_response(self, {"ok": False, "error": "Folder not found"}, code=404)
+            return
+        zip_path: Path | None = None
+        try:
+            zip_path = build_folder_zip_archive(folder)
+            file_download_response(self, zip_path, f"{name}.zip", content_type="application/zip")
+        except Exception as exc:
+            json_response(self, {"ok": False, "error": str(exc)}, code=500)
+        finally:
+            if zip_path is not None:
+                zip_path.unlink(missing_ok=True)
 
     def upload_to_folder(self) -> None:
         """Залить видео или json в папку."""
