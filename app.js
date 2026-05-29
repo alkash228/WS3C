@@ -84,6 +84,8 @@ let builtWarningVideoByHumanId = {};
 const WARNING_VIDEO_STATE_PREFIX = "samv.warning_video_state:";
 let accessRole = "guest";
 let accessClientIp = "";
+let infConfigRevision = "";
+let infConfigPollTimer = null;
 
 function setTabVisible(tabId, visible) {
   const btn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
@@ -113,6 +115,65 @@ function setAnalyzerFolderHint(folder) {
   anFolder.textContent = folder ? `Папка: ${folder}` : "Папка не выбрана";
 }
 
+function infAdminHint() {
+  return isAdmin()
+    ? "Настройте на вкладке «Справочник»."
+    : "Обратитесь к администратору — настройки INF задаются на сервере.";
+}
+
+async function fetchInfConfigRevision() {
+  const out = await apiGet("/api/inf/revision");
+  if (!out.ok) return "";
+  return String(out.revision || "").trim();
+}
+
+async function loadServerInfConfig() {
+  await loadApiPrompt();
+  await loadScenarios();
+  infConfigRevision = await fetchInfConfigRevision();
+}
+
+async function pollInfConfigUpdates() {
+  if (accessRole !== "user") return;
+  try {
+    const rev = await fetchInfConfigRevision();
+    if (!rev || rev === infConfigRevision) return;
+    const hadRevision = !!infConfigRevision;
+    infConfigRevision = rev;
+    await loadApiPrompt();
+    await loadScenarios();
+    await refreshApiStatus();
+    if (hadRevision) {
+      debugLog("inf", "Настройки INF обновлены с сервера");
+      const st = document.getElementById("status");
+      if (st) st.textContent = "Настройки обновлены администратором.";
+    }
+  } catch (e) {
+    debugLog("err", `inf sync: ${e?.message || e}`);
+  }
+}
+
+function onInfConfigVisibilityChange() {
+  if (!document.hidden) pollInfConfigUpdates();
+}
+
+function startInfConfigAutoSync() {
+  stopInfConfigAutoSync();
+  if (accessRole !== "user") return;
+  infConfigPollTimer = setInterval(() => {
+    if (!document.hidden) pollInfConfigUpdates();
+  }, 6000);
+  document.addEventListener("visibilitychange", onInfConfigVisibilityChange);
+}
+
+function stopInfConfigAutoSync() {
+  if (infConfigPollTimer) {
+    clearInterval(infConfigPollTimer);
+    infConfigPollTimer = null;
+  }
+  document.removeEventListener("visibilitychange", onInfConfigVisibilityChange);
+}
+
 function setAccessDeniedOverlay(visible) {
   let el = document.getElementById("access-denied-overlay");
   if (!el) {
@@ -132,6 +193,7 @@ function setAccessDeniedOverlay(visible) {
 
 function applyAccessUi() {
   if (accessRole === "admin") {
+    stopInfConfigAutoSync();
     setAccessDeniedOverlay(false);
     setProjectFoldersCardVisible(true);
     setAnalyzerFolderHint(selectedFolder);
@@ -150,6 +212,7 @@ function applyAccessUi() {
     activateTab("main-tab");
     return;
   }
+  stopInfConfigAutoSync();
   setAccessDeniedOverlay(true);
   setProjectFoldersCardVisible(false);
   setTabVisible("main-tab", false);
@@ -341,11 +404,14 @@ async function syncRunAnalysisButton(folder = selectedFolder) {
 
 async function runFolderAnalysis() {
   if (!selectedFolder) {
-    alert("Сначала выберите папку в списке.");
+    alert(isAdmin() ? "Сначала выберите папку в списке." : "Сначала обработайте видео.");
     return;
   }
   if (!getEnabledScenarios().length) {
-    alert("Нет включённых сценариев анализатора. Отметьте на вкладке «Справочник».");
+    await loadServerInfConfig();
+  }
+  if (!getEnabledScenarios().length) {
+    alert(`Нет включённых сценариев анализатора. ${infAdminHint()}`);
     return;
   }
   const btn = document.getElementById("run-analysis-btn");
@@ -1157,6 +1223,7 @@ async function loadApiPrompt() {
   const out = await apiGet("/api/inf/api_prompt");
   if (!out.ok) return;
   apiPromptText = String(out.prompt || "").trim();
+  if (out.revision) infConfigRevision = String(out.revision).trim();
   const inp = document.getElementById("inf-api-prompt");
   if (inp) inp.value = apiPromptText;
   renderInfApiPromptDisplay();
@@ -1176,6 +1243,7 @@ async function saveApiPrompt() {
     return;
   }
   apiPromptText = String(out.prompt || "").trim();
+  if (out.revision) infConfigRevision = String(out.revision).trim();
   renderInfApiPromptDisplay();
   if (st) st.textContent = "Промпт SAM API сохранён.";
   debugLog("inf", `API prompt: ${apiPromptText}`);
@@ -1264,6 +1332,7 @@ async function loadScenarios() {
     enabled_ids: Array.isArray(out.enabled_ids) ? out.enabled_ids.map((x) => String(x || "")) : [],
     active_id: String(out.active_id || "").trim(),
   };
+  if (out.revision) infConfigRevision = String(out.revision).trim();
   renderInfScenariosList();
   renderInfScenarioSummary();
 }
@@ -1747,12 +1816,15 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
   const analysisStatus = document.getElementById("analysis-status");
   const btn = document.getElementById("process-btn");
   if (!video) return alert("Выберите видео");
+  if (!apiPromptText || !enabledScenarios.length) {
+    await loadServerInfConfig();
+  }
   if (!apiPromptText) {
-    alert("Задайте промпт SAM API на вкладке «Справочник».");
+    alert(`Промпт SAM API не задан. ${infAdminHint()}`);
     return;
   }
   if (!enabledScenarios.length) {
-    alert("Нет включённых сценариев анализатора. Отметьте на вкладке «Справочник».");
+    alert(`Нет включённых сценариев анализатора. ${infAdminHint()}`);
     return;
   }
   debugLog(
@@ -1893,7 +1965,7 @@ document.getElementById("build-video-btn").addEventListener("click", async () =>
   const status = document.getElementById("analysis-status");
   const btn = document.getElementById("build-video-btn");
   if (!selectedFolder) {
-    status.textContent = "Сначала откройте папку.";
+    status.textContent = isAdmin() ? "Сначала откройте папку." : "Сначала обработайте видео.";
     return;
   }
   if (!Array.isArray(lastWarnings) || !lastWarnings.length) {
@@ -2103,7 +2175,9 @@ document.addEventListener("visibilitychange", () => {
     await loadApiPrompt();
     await refreshList();
   } else if (accessRole === "user") {
+    await loadServerInfConfig();
     await syncSelectedFolderPrefer("");
+    startInfConfigAutoSync();
   }
   applyRevealAnimation();
 })();

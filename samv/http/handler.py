@@ -40,6 +40,7 @@ from samv.analyzer.paths import (
     resolve_mask_main_prompt,
 )
 from samv.inf.api_prompt import get_api_prompt, read_api_prompt, write_api_prompt
+from samv.inf.revision import inf_config_revision
 from samv.inf.scenarios import (
     add_scenario,
     analyzer_params_for_folder,
@@ -136,6 +137,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
                 "/api/inf/options",
                 "/api/inf/scenarios",
                 "/api/inf/api_prompt",
+                "/api/inf/revision",
                 "/api/folders/meta",
                 "/__web_samv_hint.json",
             }
@@ -297,6 +299,9 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
                 return
             if path == "/api/inf/api_prompt":
                 self.inf_api_prompt_route()
+                return
+            if path == "/api/inf/revision":
+                self.inf_revision_route()
                 return
             if path == "/api/folders/meta":
                 self.folder_meta(parsed)
@@ -847,7 +852,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
 
     def inf_scenarios_route(self) -> None:
         """Список сценариев INF."""
-        json_response(self, {"ok": True, **scenarios_list()})
+        json_response(self, {"ok": True, **scenarios_list(), "revision": inf_config_revision()})
 
     def inf_scenarios_add(self) -> None:
         data = self.read_json_body()
@@ -892,14 +897,17 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             json_response(self, {"ok": False, "error": str(exc)}, code=400)
 
     def inf_api_prompt_route(self) -> None:
-        json_response(self, {"ok": True, **read_api_prompt()})
+        json_response(self, {"ok": True, **read_api_prompt(), "revision": inf_config_revision()})
+
+    def inf_revision_route(self) -> None:
+        json_response(self, {"ok": True, "revision": inf_config_revision()})
 
     def inf_api_prompt_set(self) -> None:
         data = self.read_json_body()
         prompt = str(data.get("prompt", "") or "")
         try:
             out = write_api_prompt(prompt)
-            json_response(self, {"ok": True, **out})
+            json_response(self, {"ok": True, **out, "revision": inf_config_revision()})
         except Exception as exc:
             json_response(self, {"ok": False, "error": str(exc)}, code=400)
 
