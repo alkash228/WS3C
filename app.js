@@ -92,6 +92,27 @@ function setTabVisible(tabId, visible) {
   if (pane && !visible) pane.classList.add("hidden");
 }
 
+function isAdmin() {
+  return accessRole === "admin";
+}
+
+function setProjectFoldersCardVisible(visible) {
+  const card = document.getElementById("project-folders-card");
+  if (card) card.classList.toggle("hidden", !visible);
+}
+
+function setAnalyzerFolderHint(folder) {
+  const anFolder = document.getElementById("an-folder");
+  if (!anFolder) return;
+  if (!isAdmin()) {
+    anFolder.textContent = "";
+    anFolder.classList.add("hidden");
+    return;
+  }
+  anFolder.classList.remove("hidden");
+  anFolder.textContent = folder ? `Папка: ${folder}` : "Папка не выбрана";
+}
+
 function setAccessDeniedOverlay(visible) {
   let el = document.getElementById("access-denied-overlay");
   if (!el) {
@@ -112,6 +133,8 @@ function setAccessDeniedOverlay(visible) {
 function applyAccessUi() {
   if (accessRole === "admin") {
     setAccessDeniedOverlay(false);
+    setProjectFoldersCardVisible(true);
+    setAnalyzerFolderHint(selectedFolder);
     setTabVisible("main-tab", true);
     setTabVisible("stats-tab", true);
     setTabVisible("inf-tab", true);
@@ -119,6 +142,8 @@ function applyAccessUi() {
   }
   if (accessRole === "user") {
     setAccessDeniedOverlay(false);
+    setProjectFoldersCardVisible(false);
+    setAnalyzerFolderHint(selectedFolder);
     setTabVisible("main-tab", true);
     setTabVisible("stats-tab", false);
     setTabVisible("inf-tab", false);
@@ -126,6 +151,7 @@ function applyAccessUi() {
     return;
   }
   setAccessDeniedOverlay(true);
+  setProjectFoldersCardVisible(false);
   setTabVisible("main-tab", false);
   setTabVisible("stats-tab", false);
   setTabVisible("inf-tab", false);
@@ -1418,7 +1444,7 @@ async function loadPromptsForFolder(folder) {
   document.getElementById("report-status").textContent = "";
   document.getElementById("report-result").innerHTML = "";
   if (!folder) {
-    anFolder.textContent = "Папка не выбрана";
+    setAnalyzerFolderHint("");
     folderAnalyzerParams = { main: "", linked: [], prompt: "", violation_label: "", api_prompt: "" };
     updateFolderScenarioReadonly();
     lastWarnings = [];
@@ -1430,7 +1456,7 @@ async function loadPromptsForFolder(folder) {
     return;
   }
   loadBuiltWarningVideosState(folder);
-  anFolder.textContent = `Папка: ${folder}`;
+  setAnalyzerFolderHint(folder);
   await loadFolderAnalyzerParams(folder);
   updateFolderScenarioReadonly();
   analysisPrompts = {
@@ -1544,10 +1570,46 @@ async function loadSavedAnalysis(folder) {
   }
 }
 
+async function syncSelectedFolderPrefer(preferName = "") {
+  const res = await apiGet("/api/folders");
+  if (!res.ok) return;
+  const items = Array.isArray(res.items) ? res.items : [];
+  const names = items.map((x) => String(x.name || "")).filter(Boolean);
+  const prefer = String(preferName || selectedFolder || "").trim();
+  const next = prefer && names.includes(prefer) ? prefer : (names[0] || "");
+  if (!next) {
+    selectedFolder = "";
+    lastWarnings = [];
+    setBuildVideoEnabled(false);
+    setReportEnabled();
+    resetWarningVideo();
+    clearBuiltWarningVideos();
+    await loadPromptsForFolder("");
+    return;
+  }
+  if (next !== selectedFolder) {
+    selectedFolder = next;
+    lastWarnings = [];
+    setBuildVideoEnabled(false);
+    setReportEnabled();
+    resetWarningVideo();
+    clearBuiltWarningVideos();
+  }
+  await loadPromptsForFolder(selectedFolder);
+}
+
 async function refreshList() {
+  const res = await apiGet("/api/folders");
+  if (!isAdmin()) {
+    const prefer = String(selectedFolder || "").trim();
+    const items = Array.isArray(res.items) ? res.items : [];
+    const names = items.map((x) => String(x.name || "")).filter(Boolean);
+    const next = prefer && names.includes(prefer) ? prefer : (names[0] || "");
+    await syncSelectedFolderPrefer(next);
+    return;
+  }
   const box = document.getElementById("list");
   box.innerHTML = "<p class='muted'>Загрузка...</p>";
-  const res = await apiGet("/api/folders");
   if (!res.ok) {
     box.innerHTML = `<p class='err'>Ошибка: ${esc(res.error || "unknown")}</p>`;
     return;
@@ -1737,7 +1799,11 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
   const runs = Array.isArray(res.runs) ? res.runs : [];
   const folder = String(res.folder || "").trim();
   const okRuns = runs.filter((r) => r.analysis_ok);
-  status.textContent = `Готово. Папка: ${folder || "-"}${okRuns.length ? `, анализ: ${okRuns.length}/${runs.length} сценариев` : ""}${doneTags.length ? ` (${doneTags.join(" + ")})` : ""}`;
+  const analysisPart = okRuns.length ? `, анализ: ${okRuns.length}/${runs.length} сценариев` : "";
+  const tagsPart = doneTags.length ? ` (${doneTags.join(" + ")})` : "";
+  status.textContent = isAdmin()
+    ? `Готово. Папка: ${folder || "-"}${analysisPart}${tagsPart}`
+    : `Готово${analysisPart}${tagsPart}`;
   document.getElementById("video").value = "";
   await refreshList();
   if (folder) {
@@ -2032,10 +2098,12 @@ document.addEventListener("visibilitychange", () => {
   if (accessRole === "admin" || accessRole === "user") {
     refreshApiStatus();
   }
-  if (accessRole === "admin" || accessRole === "user") {
+  if (accessRole === "admin") {
     await loadInfOptions();
     await loadApiPrompt();
     await refreshList();
+  } else if (accessRole === "user") {
+    await syncSelectedFolderPrefer("");
   }
   applyRevealAnimation();
 })();
