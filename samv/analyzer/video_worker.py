@@ -8,9 +8,17 @@ from samv.tasks import task_progress, task_set
 from samv.video.builder import build_warning_video
 
 
+def video_task_name(main_id: int | None) -> str:
+    """Отдельная задача прогресса для сводного и per-human видео."""
+    if main_id is None:
+        return "video"
+    return f"video_h{int(main_id)}"
+
+
 def run_video_build(folder: str, main_id: int | None, colorful_masks: bool = False) -> None:
 
     """Собираем preview mp4 по warnings."""
+    task = video_task_name(main_id)
     try:
         folder_path, data_payload, video_path = load_folder_payload(folder)
         if video_path is None or not video_path.is_file():
@@ -53,7 +61,7 @@ def run_video_build(folder: str, main_id: int | None, colorful_masks: bool = Fal
 
         def progress(done: int, tot: int, msg: str) -> None:
             """Прогресс сборки видео."""
-            task_progress(folder, "video", done, tot, msg)
+            task_progress(folder, task, done, tot, msg)
 
         built = build_warning_video(
             folder,
@@ -68,7 +76,7 @@ def run_video_build(folder: str, main_id: int | None, colorful_masks: bool = Fal
         )
         task_set(
             folder,
-            "video",
+            task,
             status="done",
             percent=100,
             done=total,
@@ -80,7 +88,7 @@ def run_video_build(folder: str, main_id: int | None, colorful_masks: bool = Fal
     except Exception as exc:
         task_set(
             folder,
-            "video",
+            task,
             status="error",
             percent=0,
             message="Ошибка сборки видео",

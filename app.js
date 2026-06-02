@@ -353,34 +353,77 @@ function setVideoSrc(vid, url, forceReload = false) {
   vid.load();
 }
 
-const SAMV_PLAYER_ZOOM_STEP = 0.2;
-const SAMV_PLAYER_ZOOM_MIN = 0.5;
-const SAMV_PLAYER_ZOOM_MAX = 4;
+const SAMV_PLAYER_ZOOM_STEP = 0.15;
+const SAMV_PLAYER_ZOOM_MIN = 1;
+const SAMV_PLAYER_ZOOM_MAX = 3;
+
+function videoTaskName(mainId) {
+  if (mainId === undefined || mainId === null) return "video";
+  return `video_h${Number(mainId)}`;
+}
+
+function resetSamvPlayerShell(shell) {
+  if (!shell) return null;
+  const oldVid = shell.querySelector("video");
+  if (!oldVid) return null;
+  const attrs = {
+    id: oldVid.id || "",
+    className: oldVid.className || "",
+    humanId: oldVid.getAttribute("data-human-id") || "",
+    src: oldVid.getAttribute("src") || "",
+  };
+  shell.querySelectorAll(".samv-player-viewport, .samv-player-toolbar, .samv-player-stage, .samv-player-zoom").forEach((el) => el.remove());
+  shell.innerHTML = "";
+  const vid = document.createElement("video");
+  if (attrs.id) vid.id = attrs.id;
+  vid.className = attrs.className || "warning-video-one";
+  if (attrs.humanId) vid.setAttribute("data-human-id", attrs.humanId);
+  vid.preload = "metadata";
+  vid.playsInline = true;
+  vid.setAttribute("playsinline", "");
+  shell.appendChild(vid);
+  delete shell.dataset.samvPlayerInit;
+  if (attrs.src) vid.src = attrs.src;
+  return vid;
+}
 
 function initSamvVideoPlayer(shell) {
-  if (!shell || shell.dataset.samvPlayerInit === "1") return;
+  if (!shell) return;
+  if (shell.dataset.samvPlayerInit === "1" && shell.querySelector(".samv-player-toolbar")) return;
+  if (shell.querySelector(".samv-player-viewport")) resetSamvPlayerShell(shell);
   const vid = shell.querySelector("video");
   if (!vid) return;
   shell.dataset.samvPlayerInit = "1";
   shell.classList.add("samv-player-host");
+  vid.removeAttribute("controls");
+  vid.controls = false;
+  vid.disablePictureInPicture = true;
+  vid.setAttribute("controlsList", "nodownload noplaybackrate noremoteplayback");
 
   const viewport = document.createElement("div");
   viewport.className = "samv-player-viewport";
-  vid.parentNode.insertBefore(viewport, vid);
-  viewport.appendChild(vid);
+  shell.insertBefore(viewport, vid);
+
+  const zoomLayer = document.createElement("div");
+  zoomLayer.className = "samv-player-zoom";
+  viewport.appendChild(zoomLayer);
+  zoomLayer.appendChild(vid);
 
   const toolbar = document.createElement("div");
   toolbar.className = "samv-player-toolbar";
   toolbar.setAttribute("role", "toolbar");
   toolbar.setAttribute("aria-label", "Управление видео");
   toolbar.innerHTML = `
-    <button type="button" class="btn-secondary btn-sm" data-act="zoom-out" title="Уменьшить">−</button>
+    <button type="button" class="btn-secondary btn-sm" data-act="play" title="Воспроизведение">▶</button>
+    <input type="range" class="samv-player-seek" data-seek min="0" max="1000" value="0" aria-label="Позиция" />
+    <span class="samv-player-time muted small" data-time>0:00 / 0:00</span>
+    <button type="button" class="btn-secondary btn-sm" data-act="zoom-out" title="Уменьшить (Ctrl+колёсико)">−</button>
     <button type="button" class="btn-secondary btn-sm" data-act="zoom-reset" title="Сброс масштаба">100%</button>
-    <button type="button" class="btn-secondary btn-sm" data-act="zoom-in" title="Увеличить">+</button>
+    <button type="button" class="btn-secondary btn-sm" data-act="zoom-in" title="Увеличить (Ctrl+колёсико)">+</button>
     <span class="samv-player-zoom-label" data-zoom-label>100%</span>
     <label class="samv-player-rate">
       <span class="muted small">Скорость</span>
-      <select data-rate aria-label="Скорость воспроизведения">
+      <select data-rate aria-label="Скорость">
         <option value="0.5">0.5×</option>
         <option value="0.75">0.75×</option>
         <option value="1" selected>1×</option>
@@ -389,20 +432,47 @@ function initSamvVideoPlayer(shell) {
         <option value="2">2×</option>
       </select>
     </label>
-    <button type="button" class="btn-secondary btn-sm" data-act="frame-back" title="Кадр назад">◀ кадр</button>
-    <button type="button" class="btn-secondary btn-sm" data-act="frame-fwd" title="Кадр вперёд">кадр ▶</button>
+    <button type="button" class="btn-secondary btn-sm" data-act="frame-back" title="Кадр назад">◀</button>
+    <button type="button" class="btn-secondary btn-sm" data-act="frame-fwd" title="Кадр вперёд">▶</button>
+    <button type="button" class="btn-secondary btn-sm" data-act="fullscreen" title="На весь экран (с zoom)">⛶</button>
   `;
   shell.appendChild(toolbar);
+
+  const playBtn = toolbar.querySelector('[data-act="play"]');
+  const seek = toolbar.querySelector("[data-seek]");
+  const timeEl = toolbar.querySelector("[data-time]");
+  const zoomLabel = toolbar.querySelector("[data-zoom-label]");
+  const rateSel = toolbar.querySelector("[data-rate]");
 
   let scale = 1;
   let panX = 0;
   let panY = 0;
   let drag = null;
+  let seeking = false;
 
-  const zoomLabel = toolbar.querySelector("[data-zoom-label]");
+  function fmtTime(sec) {
+    if (!Number.isFinite(sec) || sec < 0) return "0:00";
+    const s = Math.floor(sec);
+    const m = Math.floor(s / 60);
+    const rs = s % 60;
+    return `${m}:${String(rs).padStart(2, "0")}`;
+  }
+
+  function clampPan() {
+    if (scale <= 1) {
+      panX = 0;
+      panY = 0;
+      return;
+    }
+    const maxX = Math.max(0, (viewport.clientWidth * (scale - 1)) / 2);
+    const maxY = Math.max(0, (viewport.clientHeight * (scale - 1)) / 2);
+    panX = Math.max(-maxX, Math.min(maxX, panX));
+    panY = Math.max(-maxY, Math.min(maxY, panY));
+  }
 
   function applyTransform() {
-    vid.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+    clampPan();
+    zoomLayer.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
     if (zoomLabel) zoomLabel.textContent = `${Math.round(scale * 100)}%`;
   }
 
@@ -419,26 +489,76 @@ function initSamvVideoPlayer(shell) {
     applyTransform();
   }
 
+  function updateTimeUi() {
+    const dur = Number(vid.duration);
+    const cur = Number(vid.currentTime);
+    if (timeEl) {
+      timeEl.textContent = `${fmtTime(cur)} / ${fmtTime(dur)}`;
+    }
+    if (seek && Number.isFinite(dur) && dur > 0 && !seeking) {
+      seek.value = String(Math.round((cur / dur) * 1000));
+    }
+    if (playBtn) {
+      playBtn.textContent = vid.paused ? "▶" : "❚❚";
+    }
+  }
+
+  function exitFsFallback() {
+    shell.classList.remove("samv-player-fs-fallback");
+    document.body.classList.remove("samv-player-fs-lock");
+  }
+
+  async function toggleFullscreen() {
+    try {
+      if (document.fullscreenElement === shell) {
+        await document.exitFullscreen();
+      } else {
+        exitFsFallback();
+        await shell.requestFullscreen();
+      }
+    } catch (_e) {
+      const on = shell.classList.toggle("samv-player-fs-fallback");
+      document.body.classList.toggle("samv-player-fs-lock", on);
+    }
+  }
+
   toolbar.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-act]");
     if (!btn) return;
     const act = btn.getAttribute("data-act");
+    if (act === "play") {
+      if (vid.paused) vid.play().catch(() => {});
+      else vid.pause();
+      updateTimeUi();
+    }
     if (act === "zoom-in") setScale(scale + SAMV_PLAYER_ZOOM_STEP);
     if (act === "zoom-out") setScale(scale - SAMV_PLAYER_ZOOM_STEP);
     if (act === "zoom-reset") setScale(1);
+    if (act === "fullscreen") toggleFullscreen();
     if (act === "frame-back" || act === "frame-fwd") {
-      const fps = Number(vid.playbackRate) > 0 ? 25 : 25;
-      const step = 1 / fps;
+      const step = 1 / 25;
       vid.pause();
       vid.currentTime = Math.max(0, Math.min(vid.duration || 0, vid.currentTime + (act === "frame-fwd" ? step : -step)));
+      updateTimeUi();
     }
   });
 
-  const rateSel = toolbar.querySelector("[data-rate]");
   if (rateSel) {
     rateSel.addEventListener("change", () => {
       const v = Number(rateSel.value);
       if (Number.isFinite(v) && v > 0) vid.playbackRate = v;
+    });
+  }
+
+  if (seek) {
+    seek.addEventListener("input", () => {
+      seeking = true;
+      const dur = Number(vid.duration);
+      if (dur > 0) vid.currentTime = (Number(seek.value) / 1000) * dur;
+      updateTimeUi();
+    });
+    seek.addEventListener("change", () => {
+      seeking = false;
     });
   }
 
@@ -447,11 +567,18 @@ function initSamvVideoPlayer(shell) {
     (e) => {
       if (!e.ctrlKey && !e.altKey) return;
       e.preventDefault();
+      e.stopPropagation();
       const delta = e.deltaY > 0 ? -SAMV_PLAYER_ZOOM_STEP : SAMV_PLAYER_ZOOM_STEP;
       setScale(scale + delta);
     },
     { passive: false },
   );
+
+  viewport.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    if (scale < 1.5) setScale(2);
+    else setScale(1);
+  });
 
   viewport.addEventListener("pointerdown", (e) => {
     if (scale <= 1) return;
@@ -462,6 +589,7 @@ function initSamvVideoPlayer(shell) {
     if (!drag) return;
     panX = drag.px + (e.clientX - drag.x);
     panY = drag.py + (e.clientY - drag.y);
+    clampPan();
     applyTransform();
   });
   viewport.addEventListener("pointerup", () => {
@@ -473,9 +601,33 @@ function initSamvVideoPlayer(shell) {
 
   vid.addEventListener("loadedmetadata", () => {
     setScale(1);
+    updateTimeUi();
   });
+  vid.addEventListener("timeupdate", updateTimeUi);
+  vid.addEventListener("play", updateTimeUi);
+  vid.addEventListener("pause", updateTimeUi);
+
+  const ro = typeof ResizeObserver !== "undefined"
+    ? new ResizeObserver(() => applyTransform())
+    : null;
+  ro?.observe(viewport);
+
+  const onFullscreenChange = () => {
+    const on = document.fullscreenElement === shell;
+    shell.classList.toggle("samv-player-is-fs", on);
+    if (!on) exitFsFallback();
+  };
+  document.addEventListener("fullscreenchange", onFullscreenChange);
+
+  const onKeyDown = (e) => {
+    if (e.key === "Escape" && shell.classList.contains("samv-player-fs-fallback")) {
+      exitFsFallback();
+    }
+  };
+  document.addEventListener("keydown", onKeyDown);
 
   applyTransform();
+  updateTimeUi();
 }
 
 function initAllSamvVideoPlayers(root = document) {
@@ -1288,9 +1440,9 @@ function renderWarnings(items) {
       <article class="warn-card">
         <div class="warn-media">
           <img class="warn-preview-img" src="${esc(preview.image_url || "")}" alt="preview human_id:${esc(hid)}" />
-          <button type="button" class="build-one-video-btn btn-secondary btn-sm" data-human-id="${esc(hid)}">Видео · human_id:${esc(hid)}</button>
-          <div class="video-shell hidden" data-video-shell="${esc(hid)}">
-            <video class="warning-video-one" data-human-id="${esc(hid)}" controls preload="metadata"></video>
+          <button type="button" class="build-one-video-btn btn-secondary btn-sm" data-human-id="${esc(hid)}">${builtWarningVideoByHumanId[hid] ? "Пересобрать" : "Собрать"} видео · id:${esc(hid)}</button>
+          <div class="video-shell samv-player-host hidden" data-video-shell="${esc(hid)}" data-samv-player>
+            <video class="warning-video-one" data-human-id="${esc(hid)}" preload="metadata" playsinline></video>
           </div>
         </div>
         <div class="warn-body">
@@ -2142,7 +2294,8 @@ async function runVideoBuild(mainId) {
   if (isGlobal) box?.classList.add("hidden");
   const started = await apiPost("/api/analyzer/video", body);
   if (!started.ok) throw new Error(started.error || "unknown");
-  const out = await pollTaskUntilDone(selectedFolder, "video", (_st, percent, message) => {
+  const vtask = String(started.task || videoTaskName(mainId));
+  const out = await pollTaskUntilDone(selectedFolder, vtask, (_st, percent, message) => {
     setProgressUi(
       "video-progress-wrap",
       "video-progress-bar",
@@ -2157,9 +2310,16 @@ async function runVideoBuild(mainId) {
   if (vid && isGlobal) {
     builtWarningVideoUrl = String(out.video_url || "");
     saveBuiltWarningVideosState();
-    setVideoSrc(vid, builtWarningVideoUrl);
+    const shell = box?.querySelector(".video-shell");
+    if (shell) resetSamvPlayerShell(shell);
+    const vidFresh = document.getElementById("warning-video");
+    if (vidFresh) {
+      setVideoSrc(vidFresh, builtWarningVideoUrl, true);
+      seekVideoToMiddle(vidFresh);
+    }
     box?.classList.remove("hidden");
-    initAllSamvVideoPlayers(box || document);
+    const shell2 = box?.querySelector(".video-shell");
+    if (shell2) initSamvVideoPlayer(shell2);
   }
   return out;
 }
@@ -2285,19 +2445,24 @@ async function buildVideoForOneHuman(humanId) {
   if (!selectedFolder || !hid) return;
   const btn = document.querySelector(`.build-one-video-btn[data-human-id="${hid}"]`);
   const q = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(hid) : hid;
-  const vid = document.querySelector(`.warning-video-one[data-human-id="${q}"]`);
-  const shell = document.querySelector(`[data-video-shell="${q}"]`);
+  let shell = document.querySelector(`[data-video-shell="${q}"]`);
   if (btn) btn.disabled = true;
   if (st) st.textContent = `Сборка видео для human_id:${hid}...`;
   try {
     const out = await runVideoBuild(Number(hid));
+    if (shell) {
+      resetSamvPlayerShell(shell);
+      shell = document.querySelector(`[data-video-shell="${q}"]`);
+    }
+    const vid = document.querySelector(`.warning-video-one[data-human-id="${q}"]`);
     if (vid) {
       builtWarningVideoByHumanId[hid] = String(out.video_url || "");
       saveBuiltWarningVideosState();
-      setVideoSrc(vid, builtWarningVideoByHumanId[hid]);
+      setVideoSrc(vid, builtWarningVideoByHumanId[hid], true);
       seekVideoToMiddle(vid);
       shell?.classList.remove("hidden");
       if (shell) initSamvVideoPlayer(shell);
+      if (btn) btn.textContent = `Пересобрать видео · id:${hid}`;
     }
     if (st) st.textContent = `Видео готово для human_id:${hid}. Кадров: ${Number(out.frames_used || 0)}`;
   } catch (e) {

@@ -14,7 +14,7 @@ import http.server
 
 from samv.analyzer.batch import run_all_scenarios_for_folder
 from samv.analyzer.runner import run_analysis
-from samv.analyzer.video_worker import run_video_build
+from samv.analyzer.video_worker import run_video_build, video_task_name
 from samv.api.client import (
     api_health_status,
     effective_api_base,
@@ -1163,7 +1163,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
         qs = parse_qs(parsed.query or "")
         folder = safe_name((qs.get("folder") or [""])[0])
         task = str((qs.get("task") or ["analysis"])[0] or "analysis").strip().lower()
-        if task not in ("analysis", "video", "process"):
+        if task not in ("analysis", "video", "process") and not task.startswith("video_h"):
             task = "analysis"
         if not folder:
             json_response(self, {"ok": False, "error": "Need folder"}, code=400)
@@ -1280,7 +1280,8 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 json_response(self, {"ok": False, "error": "main_id must be integer"}, code=400)
                 return
-        cur = task_get(folder, "video")
+        task = video_task_name(main_id)
+        cur = task_get(folder, task)
         if str(cur.get("status", "")) == "running":
             json_response(self, {"ok": False, "error": "Video build already running for this folder"}, code=409)
             return
@@ -1298,7 +1299,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
         if not result_path.is_file():
             json_response(self, {"ok": False, "error": "Run analysis first"}, code=400)
             return
-        task_set(folder, "video", status="running", percent=0, done=0, total=0, message="Старт сборки видео...")
+        task_set(folder, task, status="running", percent=0, done=0, total=0, message="Старт сборки видео...")
         threading.Thread(
             target=run_video_build,
             args=(folder, main_id, colorful_masks),
@@ -1310,7 +1311,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
                 "ok": True,
                 "started": True,
                 "folder": folder,
-                "task": "video",
+                "task": task,
                 "main_id": main_id,
                 "colorful_masks": colorful_masks,
             },

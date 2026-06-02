@@ -166,6 +166,11 @@ def build_warning_video(
     analysis_dir = folder_path / "analysis"
     out_name = "warnings_preview.mp4" if main_id is None else f"warnings_preview_human_{int(main_id)}.mp4"
     out_path = analysis_dir / out_name
+    if out_path.is_file():
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     extract_path = find_video_for_masks(folder_path, payload) or video_path
     h, w = resolve_mask_dimensions(payload, extract_path)
@@ -173,12 +178,16 @@ def build_warning_video(
         raise RuntimeError("Invalid width/height in data.json")
 
     fps = safe_video_fps(extract_path)
-    clip_items = collect_track_clip_items(warnings, payload, main_prompt, main_id)
-    if not clip_items:
-        # Фоллбек на старое поведение, если в data.json нет трека.
-        context_frames = resolve_context_frames(fps)
+    context_frames = resolve_context_frames(fps)
+    if main_id is not None:
+        # По human_id — только кадры нарушений ± контекст (не весь трек в data.json).
         clip_items = collect_clip_items(warnings, main_id)
         clip_items = expand_clip_items_with_context(clip_items, context_frames)
+    else:
+        clip_items = collect_track_clip_items(warnings, payload, main_prompt, None)
+        if not clip_items:
+            clip_items = collect_clip_items(warnings, None)
+            clip_items = expand_clip_items_with_context(clip_items, context_frames)
     if not clip_items:
         raise RuntimeError("No warning frames found. Run analysis first.")
     w_enc = max(2, w - (w % 2))
