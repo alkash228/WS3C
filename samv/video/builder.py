@@ -8,7 +8,13 @@ from pathlib import Path
 from samv import config as cfg
 from samv.masks.core import label_matches
 from samv.parallel import map_parallel, worker_count
-from samv.video.io import safe_video_fps
+from samv.video.io import (
+    cache_json_frames_as_jpeg,
+    find_video_for_masks,
+    renumber_jpeg_sequence,
+    resolve_mask_dimensions,
+    safe_video_fps,
+)
 from samv.video.workers import render_clip_frame_job
 
 
@@ -161,12 +167,12 @@ def build_warning_video(
     out_name = "warnings_preview.mp4" if main_id is None else f"warnings_preview_human_{int(main_id)}.mp4"
     out_path = analysis_dir / out_name
 
-    h = int(payload.get("height", 0) or 0)
-    w = int(payload.get("width", 0) or 0)
+    extract_path = find_video_for_masks(folder_path, payload) or video_path
+    h, w = resolve_mask_dimensions(payload, extract_path)
     if h <= 0 or w <= 0:
         raise RuntimeError("Invalid width/height in data.json")
 
-    fps = safe_video_fps(video_path)
+    fps = safe_video_fps(extract_path)
     clip_items = collect_track_clip_items(warnings, payload, main_prompt, main_id)
     if not clip_items:
         # Фоллбек на старое поведение, если в data.json нет трека.
@@ -181,16 +187,30 @@ def build_warning_video(
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_dir.mkdir(parents=True, exist_ok=True)
+    src_cache = tmp_dir / "src_cache"
+    json_fidx_list = [int(x[0]) for x in clip_items]
+    src_by_json = cache_json_frames_as_jpeg(
+        extract_path,
+        json_fidx_list,
+        payload,
+        src_cache,
+        mask_h=h,
+        mask_w=w,
+    )
+    if not src_by_json:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise RuntimeError(
+            "Не удалось прочитать кадры из видео. Проверьте video.mp4 / video_sam.mp4 и data.json."
+        )
 
     total = len(clip_items)
     data_json_path = str(folder_path / "data.json")
-    video_path_str = str(video_path)
     tmp_dir_str = str(tmp_dir)
 
     jobs = [
         (
             seq,
-            video_path_str,
+            src_by_json.get(int(fidx), ""),
             data_json_path,
             fidx,
             mid,
@@ -204,6 +224,7 @@ def build_warning_video(
             bool(colorful_masks),
         )
         for seq, (fidx, mid, reasons) in enumerate(clip_items)
+        if src_by_json.get(int(fidx))
     ]
 
     written = 0
@@ -226,16 +247,24 @@ def build_warning_video(
     if written <= 0:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise RuntimeError("No valid warning frames to encode.")
+    frame_count = renumber_jpeg_sequence(tmp_dir)
+    if frame_count <= 0:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise RuntimeError("No JPEG frames after renumber for ffmpeg.")
     if progress_cb:
         progress_cb(total, total, "Сборка MP4 (ffmpeg)...")
 
     cmd = [
         "ffmpeg", "-y",
         "-framerate", f"{fps:.6f}",
+        "-start_number", "0",
         "-i", str(tmp_dir / "frame_%06d.jpg"),
+        "-frames:v", str(frame_count),
         "-r", f"{fps:.6f}",
         "-pix_fmt", "yuv420p",
         "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "20",
         "-movflags", "+faststart",
         str(out_path),
     ]

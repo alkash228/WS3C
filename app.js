@@ -353,6 +353,135 @@ function setVideoSrc(vid, url, forceReload = false) {
   vid.load();
 }
 
+const SAMV_PLAYER_ZOOM_STEP = 0.2;
+const SAMV_PLAYER_ZOOM_MIN = 0.5;
+const SAMV_PLAYER_ZOOM_MAX = 4;
+
+function initSamvVideoPlayer(shell) {
+  if (!shell || shell.dataset.samvPlayerInit === "1") return;
+  const vid = shell.querySelector("video");
+  if (!vid) return;
+  shell.dataset.samvPlayerInit = "1";
+  shell.classList.add("samv-player-host");
+
+  const viewport = document.createElement("div");
+  viewport.className = "samv-player-viewport";
+  vid.parentNode.insertBefore(viewport, vid);
+  viewport.appendChild(vid);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "samv-player-toolbar";
+  toolbar.setAttribute("role", "toolbar");
+  toolbar.setAttribute("aria-label", "Управление видео");
+  toolbar.innerHTML = `
+    <button type="button" class="btn-secondary btn-sm" data-act="zoom-out" title="Уменьшить">−</button>
+    <button type="button" class="btn-secondary btn-sm" data-act="zoom-reset" title="Сброс масштаба">100%</button>
+    <button type="button" class="btn-secondary btn-sm" data-act="zoom-in" title="Увеличить">+</button>
+    <span class="samv-player-zoom-label" data-zoom-label>100%</span>
+    <label class="samv-player-rate">
+      <span class="muted small">Скорость</span>
+      <select data-rate aria-label="Скорость воспроизведения">
+        <option value="0.5">0.5×</option>
+        <option value="0.75">0.75×</option>
+        <option value="1" selected>1×</option>
+        <option value="1.25">1.25×</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2×</option>
+      </select>
+    </label>
+    <button type="button" class="btn-secondary btn-sm" data-act="frame-back" title="Кадр назад">◀ кадр</button>
+    <button type="button" class="btn-secondary btn-sm" data-act="frame-fwd" title="Кадр вперёд">кадр ▶</button>
+  `;
+  shell.appendChild(toolbar);
+
+  let scale = 1;
+  let panX = 0;
+  let panY = 0;
+  let drag = null;
+
+  const zoomLabel = toolbar.querySelector("[data-zoom-label]");
+
+  function applyTransform() {
+    vid.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+    if (zoomLabel) zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+  }
+
+  function clampScale(v) {
+    return Math.max(SAMV_PLAYER_ZOOM_MIN, Math.min(SAMV_PLAYER_ZOOM_MAX, v));
+  }
+
+  function setScale(next) {
+    scale = clampScale(next);
+    if (scale <= 1) {
+      panX = 0;
+      panY = 0;
+    }
+    applyTransform();
+  }
+
+  toolbar.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    const act = btn.getAttribute("data-act");
+    if (act === "zoom-in") setScale(scale + SAMV_PLAYER_ZOOM_STEP);
+    if (act === "zoom-out") setScale(scale - SAMV_PLAYER_ZOOM_STEP);
+    if (act === "zoom-reset") setScale(1);
+    if (act === "frame-back" || act === "frame-fwd") {
+      const fps = Number(vid.playbackRate) > 0 ? 25 : 25;
+      const step = 1 / fps;
+      vid.pause();
+      vid.currentTime = Math.max(0, Math.min(vid.duration || 0, vid.currentTime + (act === "frame-fwd" ? step : -step)));
+    }
+  });
+
+  const rateSel = toolbar.querySelector("[data-rate]");
+  if (rateSel) {
+    rateSel.addEventListener("change", () => {
+      const v = Number(rateSel.value);
+      if (Number.isFinite(v) && v > 0) vid.playbackRate = v;
+    });
+  }
+
+  viewport.addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.ctrlKey && !e.altKey) return;
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -SAMV_PLAYER_ZOOM_STEP : SAMV_PLAYER_ZOOM_STEP;
+      setScale(scale + delta);
+    },
+    { passive: false },
+  );
+
+  viewport.addEventListener("pointerdown", (e) => {
+    if (scale <= 1) return;
+    drag = { x: e.clientX, y: e.clientY, px: panX, py: panY };
+    viewport.setPointerCapture(e.pointerId);
+  });
+  viewport.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    panX = drag.px + (e.clientX - drag.x);
+    panY = drag.py + (e.clientY - drag.y);
+    applyTransform();
+  });
+  viewport.addEventListener("pointerup", () => {
+    drag = null;
+  });
+  viewport.addEventListener("pointercancel", () => {
+    drag = null;
+  });
+
+  vid.addEventListener("loadedmetadata", () => {
+    setScale(1);
+  });
+
+  applyTransform();
+}
+
+function initAllSamvVideoPlayers(root = document) {
+  root.querySelectorAll(".video-shell:not([data-samv-player-init])").forEach((shell) => initSamvVideoPlayer(shell));
+}
+
 function restoreBuiltWarningVideos() {
   const box = document.getElementById("warning-video-box");
   const globalVid = document.getElementById("warning-video");
@@ -471,6 +600,42 @@ function hideAnalysisProgress() {
 
 function hideVideoProgress() {
   setProgressUi("video-progress-wrap", "video-progress-bar", "video-progress-text", "video-progress-pct", false, 0, "");
+}
+
+function hideProcessProgress() {
+  setProgressUi("process-progress-wrap", "process-progress-bar", "process-progress-text", "process-progress-pct", false, 0, "");
+  const eta = document.getElementById("process-progress-eta");
+  if (eta) eta.textContent = "";
+}
+
+function formatEta(sec) {
+  if (sec == null || !Number.isFinite(sec) || sec <= 0) return "";
+  const s = Math.round(sec);
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m <= 0) return `ещё ~${rs} с`;
+  return `ещё ~${m} мин ${rs} с`;
+}
+
+function updateProcessProgressUi(st, percent, message) {
+  setProgressUi(
+    "process-progress-wrap",
+    "process-progress-bar",
+    "process-progress-text",
+    "process-progress-pct",
+    true,
+    percent,
+    message || "SAM API…",
+  );
+  const etaEl = document.getElementById("process-progress-eta");
+  if (!etaEl) return;
+  const done = Number(st?.done || 0);
+  const total = Number(st?.total || 0);
+  const eta = formatEta(Number(st?.eta_seconds));
+  const parts = [];
+  if (total > 0) parts.push(`Кадров: ${done} / ${total}`);
+  if (eta) parts.push(eta);
+  etaEl.textContent = parts.join(" · ");
 }
 
 async function pollTaskUntilDone(folder, task, onTick) {
@@ -1175,6 +1340,7 @@ function renderWarnings(items) {
     btn.addEventListener("click", () => buildVideoForOneHuman(String(btn.getAttribute("data-human-id") || "")));
   });
   restoreBuiltWarningVideosDeferred();
+  initAllSamvVideoPlayers(box);
   updateReportSelectionSummary();
   updateReportPanel();
 }
@@ -1859,22 +2025,46 @@ document.getElementById("process-form").addEventListener("submit", async (e) => 
     ? `Обработка началась (режим ${tags.join(" + ")})...`
     : "Обработка началась...";
   btn.disabled = true;
+  hideProcessProgress();
+  setProgressUi("process-progress-wrap", "process-progress-bar", "process-progress-text", "process-progress-pct", true, 0, "Отправка видео…");
   let res;
   try {
     res = await apiPost("/api/process_video", fd, true);
   } catch (err) {
     btn.disabled = false;
+    hideProcessProgress();
     status.textContent = `Ошибка: ${err?.message || err}`;
     debugLog("err", String(err?.message || err));
     return;
   }
-  btn.disabled = false;
-  if (Array.isArray(res.debug)) debugLogServer(res.debug);
   if (!res.ok) {
+    btn.disabled = false;
+    hideProcessProgress();
     status.textContent = `Ошибка: ${res.error || "unknown"}`;
     debugLog("err", res.error || "unknown");
     return;
   }
+  if (res.started && res.folder) {
+    const folderPoll = String(res.folder || "").trim();
+    try {
+      res = await pollTaskUntilDone(folderPoll, "process", (st, percent, message) => {
+        updateProcessProgressUi(st, percent, message);
+        status.textContent = message || `Обработка… ${percent}%`;
+      });
+    } catch (err) {
+      btn.disabled = false;
+      hideProcessProgress();
+      status.textContent = `Ошибка: ${err?.message || err}`;
+      debugLog("err", String(err?.message || err));
+      return;
+    }
+  }
+  btn.disabled = false;
+  setProgressUi("process-progress-wrap", "process-progress-bar", "process-progress-text", "process-progress-pct", true, 100, "Готово");
+  const etaDone = document.getElementById("process-progress-eta");
+  if (etaDone) etaDone.textContent = "";
+  setTimeout(hideProcessProgress, 1500);
+  if (Array.isArray(res.debug)) debugLogServer(res.debug);
   const doneTags = [];
   if (Number(res.scale_div || 1) > 1) doneTags.push(`D/${Number(res.scale_div)}`);
   if (Number(res.fps_div || 1) > 1) doneTags.push(`FPS/${Number(res.fps_div)}`);
@@ -1969,6 +2159,7 @@ async function runVideoBuild(mainId) {
     saveBuiltWarningVideosState();
     setVideoSrc(vid, builtWarningVideoUrl);
     box?.classList.remove("hidden");
+    initAllSamvVideoPlayers(box || document);
   }
   return out;
 }
@@ -2106,6 +2297,7 @@ async function buildVideoForOneHuman(humanId) {
       setVideoSrc(vid, builtWarningVideoByHumanId[hid]);
       seekVideoToMiddle(vid);
       shell?.classList.remove("hidden");
+      if (shell) initSamvVideoPlayer(shell);
     }
     if (st) st.textContent = `Видео готово для human_id:${hid}. Кадров: ${Number(out.frames_used || 0)}`;
   } catch (e) {
@@ -2179,6 +2371,7 @@ document.addEventListener("visibilitychange", () => {
 
 (async () => {
   debugLog("ui", "WEB samv загружен");
+  initAllSamvVideoPlayers(document);
   await loadAccessMe();
   if (accessRole === "admin" || accessRole === "user") {
     refreshApiStatus();

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from samv.api.client import (
@@ -32,6 +33,7 @@ def run_process_video(
     fps_div: int,
     video_part_sec: float,
     folder_name: str | None = None,
+    on_sam_progress: Callable[[int, int, float, int, int], None] | None = None,
 ) -> dict[str, object]:
     """Прогон видео через API; возвращает поля для JSON-ответа."""
     meta = video_meta_from_bytes(video_bytes, suffix=ext)
@@ -49,6 +51,15 @@ def run_process_video(
     payloads: list[dict] = []
     job_ids: list[str] = []
     last_send_meta: tuple[int, int, float] | None = None
+    chunks_total = len(chunks)
+
+    def _report_sam(prog: dict[str, object], chunk_idx: int) -> None:
+        if on_sam_progress is None:
+            return
+        cur = int(prog.get("current") or 0)
+        tot = int(prog.get("total") or 0)
+        eta = float(prog.get("eta_seconds") or 0.0)
+        on_sam_progress(cur, tot, eta, chunk_idx, chunks_total)
 
     for ci, chunk_bytes in enumerate(chunks):
         send_video_name = video_name
@@ -68,10 +79,14 @@ def run_process_video(
 
         job_id = start_video_job(send_video_name, send_video_bytes, prompt)
         job_ids.append(job_id)
-        wait_job_done(job_id)
+        wait_job_done(job_id, on_progress=lambda p: _report_sam(p, ci))
         result = fetch_job_result(job_id)
 
         if len(chunks) == 1:
+            folder, _, _ = folder_paths(folder_name)
+            folder.mkdir(parents=True, exist_ok=True)
+            if scale_div > 1.0 or fps_div > 1:
+                (folder / "video_sam.mp4").write_bytes(send_video_bytes)
             save_processed_outputs(
                 folder_name,
                 result,

@@ -436,6 +436,10 @@ button:disabled {
   border-radius: var(--radius-sm);
 }
 
+.process-eta {
+  margin: 8px 0 0;
+}
+
 .progress-label {
   display: flex;
   justify-content: space-between;
@@ -680,6 +684,68 @@ button:disabled {
   max-width: 100%;
   object-fit: contain;
   display: block;
+}
+
+.samv-player-host {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  aspect-ratio: auto;
+  min-height: 220px;
+}
+
+.samv-player-viewport {
+  flex: 1 1 auto;
+  min-height: 200px;
+  max-height: min(70vh, 520px);
+  overflow: hidden;
+  cursor: grab;
+  background: #0b1220;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.samv-player-viewport:active {
+  cursor: grabbing;
+}
+
+.samv-player-viewport video {
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.samv-player-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface-3);
+  border-top: 1px solid var(--border);
+}
+
+.samv-player-zoom-label {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  min-width: 3.2em;
+}
+
+.samv-player-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.samv-player-rate select {
+  font: inherit;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .warn-media .video-shell {

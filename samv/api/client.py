@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -395,12 +396,19 @@ def start_video_job(video_name: str, video_bytes: bytes, prompt: str) -> str:
     return jid
 
 
-def wait_job_done(job_id: str) -> dict:
+def wait_job_done(
+    job_id: str,
+    on_progress: Callable[[dict[str, object]], None] | None = None,
+) -> dict:
 
-    """Ждем пока job закончится."""
+    """Ждем пока job закончится; on_progress получает progress из GET /jobs/{id}."""
     started = time.time()
     while True:
         st = http_json_get(f"/jobs/{job_id}")
+        if on_progress:
+            prog = st.get("progress")
+            if isinstance(prog, dict):
+                on_progress(prog)
         status = str(st.get("status", "") or "")
         if status == "done":
             return st

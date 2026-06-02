@@ -54,10 +54,10 @@ def _apply_colorful_masks(frame: np.ndarray, instances: list[dict], h: int, w: i
 
 
 def render_clip_frame_job(args: tuple) -> tuple[int, str] | None:
-    """Воркер: рисуем один кадр в jpg для склейки mp4."""
+    """Воркер: рисуем один кадр в jpg для склейки mp4 (кадр уже вырезан без seek)."""
     (
         seq,
-        video_path,
+        src_jpg_path,
         data_json_path,
         fidx,
         main_id,
@@ -70,30 +70,26 @@ def render_clip_frame_job(args: tuple) -> tuple[int, str] | None:
         tmp_dir,
         colorful_masks,
     ) = args
-    payload = json.loads(Path(data_json_path).read_text(encoding="utf-8"))
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
+    src_path = Path(str(src_jpg_path))
+    if not src_path.is_file():
         return None
-    try:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, float(fidx))
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            return None
-        if frame.shape[0] != h or frame.shape[1] != w:
-            frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
-        inst = frame_instances(payload, fidx)
-        if colorful_masks:
-            frame = _apply_colorful_masks(frame, inst, h, w)
-        main_mask = mask_for_main_id(inst, main_prompt, int(main_id), h, w)
-        if main_mask is not None:
-            frame = draw_danger_frame(frame, main_mask, list(reasons))
-        elif list(reasons):
-            frame = draw_danger_frame(frame, np.zeros((h, w), dtype=bool), list(reasons))
-        if frame.shape[0] != h_enc or frame.shape[1] != w_enc:
-            frame = cv2.resize(frame, (w_enc, h_enc), interpolation=cv2.INTER_LINEAR)
-        out_jpg = Path(tmp_dir) / f"frame_{int(seq):06d}.jpg"
-        if not cv2.imwrite(str(out_jpg), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 94]):
-            return None
-        return int(seq), str(out_jpg)
-    finally:
-        cap.release()
+    frame = cv2.imread(str(src_path), cv2.IMREAD_COLOR)
+    if frame is None:
+        return None
+    payload = json.loads(Path(data_json_path).read_text(encoding="utf-8"))
+    if frame.shape[0] != h or frame.shape[1] != w:
+        frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+    inst = frame_instances(payload, fidx)
+    if colorful_masks:
+        frame = _apply_colorful_masks(frame, inst, h, w)
+    main_mask = mask_for_main_id(inst, main_prompt, int(main_id), h, w)
+    if main_mask is not None:
+        frame = draw_danger_frame(frame, main_mask, list(reasons))
+    elif list(reasons):
+        frame = draw_danger_frame(frame, np.zeros((h, w), dtype=bool), list(reasons))
+    if frame.shape[0] != h_enc or frame.shape[1] != w_enc:
+        frame = cv2.resize(frame, (w_enc, h_enc), interpolation=cv2.INTER_LINEAR)
+    out_jpg = Path(tmp_dir) / f"frame_{int(seq):06d}.jpg"
+    if not cv2.imwrite(str(out_jpg), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 94]):
+        return None
+    return int(seq), str(out_jpg)

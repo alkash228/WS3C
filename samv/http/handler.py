@@ -60,7 +60,7 @@ from samv.reports.build import generate_report, norm_report_formats, norm_report
 from samv.storage.folders import folder_paths, invalidate_folders_cache, list_folders, load_folder_payload
 from samv.storage.folders import processing_stats_all_folders, processing_stats_for_folder
 from samv.storage.zip_export import build_folder_zip_archive
-from samv.tasks import task_get, task_set
+from samv.tasks import task_get, task_progress, task_set
 from samv.http.multipart import field_storage_from_request
 from samv.security.access import LOCALHOST_IPS, read_access_roles, resolve_role_by_ip
 from samv.utils import file_download_response, json_response, safe_name
@@ -97,6 +97,279 @@ def _analysis_all_thread_target(folder: str) -> None:
             error=str(exc),
             result=None,
         )
+
+
+def _sam_progress_message(cur: int, tot: int, chunk_idx: int, chunks_total: int) -> str:
+    if chunks_total > 1:
+        return f"Часть {chunk_idx + 1}/{chunks_total} · кадр {cur}/{tot}"
+    if tot > 0:
+        return f"Кадр {cur}/{tot}"
+    return "SAM API…"
+
+
+def _sam_progress_percent(cur: int, tot: int, chunk_idx: int, chunks_total: int) -> tuple[int, int]:
+    if tot <= 0:
+        return 0, 1
+    if chunks_total > 1:
+        done_equiv = chunk_idx * tot + cur
+        total_equiv = chunks_total * tot
+        return done_equiv, total_equiv
+    return cur, tot
+
+
+def _process_video_thread_target(
+    *,
+    folder_name: str,
+    video_name: str,
+    video_bytes: bytes,
+    ext: str,
+    api_prompt: str,
+    scale_div: float,
+    fps_div: int,
+    video_part_sec: float,
+    scenarios: list[dict[str, object]],
+) -> None:
+    """Фон: SAM API → анализ сценариев → единый результат."""
+    folder_name = safe_name(folder_name)
+    use_subdirs = len(scenarios) > 1
+    debug_log: list[str] = []
+    runs: list[dict[str, object]] = []
+    merged_warnings: list[dict[str, object]] = []
+    merged_frames_checked = 0
+    merged_frames_with_main = 0
+    merged_pending_count = 0
+    merged_cleared_count = 0
+    merged_pending_rows: list[dict[str, object]] = []
+    last_out: dict[str, object] = {}
+
+    def on_sam_progress(cur: int, tot: int, eta: float, chunk_idx: int, chunks_total: int) -> None:
+        done_n, total_n = _sam_progress_percent(cur, tot, chunk_idx, chunks_total)
+        task_progress(
+            folder_name,
+            "process",
+            done_n,
+            total_n,
+            _sam_progress_message(cur, tot, chunk_idx, chunks_total),
+            eta_seconds=eta,
+        )
+
+    try:
+        debug_log.append("Инференс SAM API (один прогон)…")
+        task_progress(folder_name, "process", 0, 1, "Запуск SAM API…")
+        last_out = run_process_video(
+            video_name=video_name,
+            video_bytes=video_bytes,
+            ext=ext,
+            prompt=api_prompt,
+            scale_div=float(scale_div),
+            fps_div=int(fps_div),
+            video_part_sec=float(video_part_sec),
+            folder_name=folder_name,
+            on_sam_progress=on_sam_progress,
+        )
+        folder_name = safe_name(str(last_out.get("folder", "") or folder_name))
+        debug_log.append(f"Инференс завершён: {folder_name}")
+        task_progress(folder_name, "process", 1, 1, "Инференс завершён, анализ сценариев…", eta_seconds=0)
+    except Exception as exc:
+        traceback.print_exc()
+        task_set(
+            folder_name,
+            "process",
+            status="error",
+            percent=0,
+            message="Ошибка SAM API",
+            error=str(exc),
+            debug=debug_log,
+        )
+        return
+
+    try:
+        folder_path, _, _ = load_folder_payload(folder_name)
+        write_run_meta(folder_path, api_prompt)
+        debug_log.append("meta.json (промпт API) записан")
+    except Exception as exc:
+        debug_log.append(f"Ошибка meta API: {exc}")
+
+    for idx, scenario in enumerate(scenarios, start=1):
+        chain = str(scenario.get("prompt", "") or "").strip()
+        sid = str(scenario.get("id", "") or "").strip()
+        if not chain:
+            debug_log.append(f"[{idx}] Пропуск «{scenario.get('title', '')}»: пустая цепочка анализатора")
+            continue
+        try:
+            main_prompt, linked_prompts = scenario_to_analyzer(chain)
+        except Exception as exc:
+            debug_log.append(f"[{idx}] Ошибка разбора цепочки: {exc}")
+            continue
+
+        scenario_key = sid if use_subdirs else None
+        debug_log.append(f"[{idx}/{len(scenarios)}] Анализ «{scenario.get('title', '')}»")
+        task_set(
+            folder_name,
+            "process",
+            status="running",
+            percent=int(round(100.0 * (idx - 1) / max(1, len(scenarios)))),
+            message=f"Анализ ({idx}/{len(scenarios)}): {scenario.get('title', '')}…",
+        )
+        task_set(
+            folder_name,
+            "analysis",
+            status="running",
+            percent=0,
+            done=0,
+            total=0,
+            message=f"Анализ ({idx}/{len(scenarios)}): {scenario.get('title', '')}…",
+        )
+
+        analysis_ok = False
+        analysis_error = ""
+        try:
+            folder_path, _, _ = load_folder_payload(folder_name)
+            write_scenario_meta(
+                folder_path,
+                scenario,
+                main_prompt,
+                linked_prompts,
+                scenario_subdir=use_subdirs,
+            )
+            run_analysis(
+                folder_name,
+                main_prompt,
+                linked_prompts,
+                load_folder_payload,
+                scenario_id=scenario_key,
+            )
+            analysis_ok = True
+            debug_log.append("  Анализ завершён")
+            result_path = analyzer_result_path(folder_path, scenario_key)
+            if result_path.is_file():
+                try:
+                    parsed = json.loads(result_path.read_text(encoding="utf-8"))
+                    if isinstance(parsed, dict):
+                        warn_rows = parsed.get("warnings")
+                        if isinstance(warn_rows, list):
+                            merged_warnings.extend([w for w in warn_rows if isinstance(w, dict)])
+                        merged_frames_checked = max(
+                            merged_frames_checked,
+                            int(parsed.get("frames_checked", 0) or 0),
+                        )
+                        merged_frames_with_main = max(
+                            merged_frames_with_main,
+                            int(parsed.get("frames_with_main", 0) or 0),
+                        )
+                        merged_pending_count += int(parsed.get("pending_count", 0) or 0)
+                        merged_cleared_count += int(parsed.get("cleared_count", 0) or 0)
+                        diag = parsed.get("diagnostics")
+                        if isinstance(diag, dict):
+                            pending_rows = diag.get("pending_by_main")
+                            if isinstance(pending_rows, list):
+                                merged_pending_rows.extend([x for x in pending_rows if isinstance(x, dict)])
+                except Exception as exc:
+                    debug_log.append(f"  Ошибка чтения результата сценария: {exc}")
+        except Exception as exc:
+            analysis_error = str(exc)
+            debug_log.append(f"  Ошибка анализа: {exc}")
+
+        viol_label = scenario_violation_label(scenario)
+        run_row: dict[str, object] = {
+            "folder": folder_name,
+            "scenario": scenario,
+            "scenario_id": sid,
+            "analyzer_main": main_prompt,
+            "analyzer_linked": linked_prompts,
+            "violation_label": viol_label,
+            "analysis_ok": analysis_ok,
+            "ok": True,
+        }
+        if analysis_error:
+            run_row["analysis_error"] = analysis_error
+        runs.append(run_row)
+
+    if not runs:
+        task_set(
+            folder_name,
+            "process",
+            status="error",
+            percent=0,
+            message="Ни один сценарий не обработан",
+            error="Ни один сценарий не обработан",
+            debug=debug_log,
+        )
+        return
+
+    last_run = runs[-1]
+    last_scenario = last_run.get("scenario") if isinstance(last_run.get("scenario"), dict) else {}
+    scenario_titles: list[str] = []
+    violation_labels: list[str] = []
+    for r in runs:
+        sc = r.get("scenario")
+        if isinstance(sc, dict):
+            title = str(sc.get("title", "") or "").strip()
+            if title and title not in scenario_titles:
+                scenario_titles.append(title)
+        lbl = str(r.get("violation_label", "") or "").strip()
+        if lbl and lbl not in violation_labels:
+            violation_labels.append(lbl)
+    try:
+        folder_path, _, _ = load_folder_payload(folder_name)
+        analysis_dir = folder_path / "analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        mask_main = resolve_mask_main_prompt(folder_path, None, None)
+        unified = {
+            "schema": "samv_mask_analyzer_v1",
+            "folder": folder_name,
+            "main_prompt": "multi",
+            "mask_main_prompt": mask_main,
+            "linked_prompts": [],
+            "frames_checked": int(merged_frames_checked),
+            "frames_with_main": int(merged_frames_with_main),
+            "warnings_count": int(len(merged_warnings)),
+            "pending_count": int(merged_pending_count),
+            "cleared_count": int(merged_cleared_count),
+            "warnings": merged_warnings,
+            "diagnostics": {"pending_by_main": merged_pending_rows},
+            "violation_label": str(last_run.get("violation_label", "") or ""),
+            "violation_labels": violation_labels,
+            "scenario_title": str((last_scenario or {}).get("title", "") or ""),
+            "scenario_titles": scenario_titles,
+            "scenarios_total": int(len(scenarios)),
+            "scenarios_done": int(len(runs)),
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        (analysis_dir / "analyzer_result.json").write_text(
+            json.dumps(unified, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        debug_log.append("Единый analyzer_result.json собран")
+    except Exception as exc:
+        debug_log.append(f"Ошибка сборки единого результата: {exc}")
+    invalidate_folders_cache()
+    task_set(
+        folder_name,
+        "process",
+        status="done",
+        percent=100,
+        done=1,
+        total=1,
+        message="Готово",
+        result={
+            "ok": True,
+            "items": list_folders(),
+            "debug": debug_log,
+            "batch": use_subdirs,
+            "api_prompt": api_prompt,
+            "runs": runs,
+            "scenarios_total": len(scenarios),
+            "scenarios_done": len(runs),
+            "scenario": last_scenario,
+            "analyzer_main": "multi",
+            "analyzer_linked": [],
+            "violation_label": last_run.get("violation_label", ""),
+            "analysis_started": any(bool(r.get("analysis_ok")) for r in runs),
+            "folder": folder_name,
+            **last_out,
+        },
+    )
 
 
 class SamvHandler(http.server.SimpleHTTPRequestHandler):
@@ -616,209 +889,37 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         folder_name = safe_name(new_folder_name())
-        use_subdirs = len(scenarios) > 1
-        runs: list[dict[str, object]] = []
-        merged_warnings: list[dict[str, object]] = []
-        merged_frames_checked = 0
-        merged_frames_with_main = 0
-        merged_pending_count = 0
-        merged_cleared_count = 0
-        merged_pending_rows: list[dict[str, object]] = []
-        last_out: dict[str, object] = {}
-
-        try:
-            debug_log.append("Инференс SAM API (один прогон)…")
-            last_out = run_process_video(
-                video_name=video_name,
-                video_bytes=video_bytes,
-                ext=ext,
-                prompt=api_prompt,
-                scale_div=float(scale_div),
-                fps_div=int(fps_div),
-                video_part_sec=float(video_part_sec),
-                folder_name=folder_name,
-            )
-            folder_name = safe_name(str(last_out.get("folder", "") or folder_name))
-            debug_log.append(f"Инференс завершён: {folder_name}")
-        except Exception as exc:
-            traceback.print_exc()
-            json_response(
-                self,
-                {"ok": False, "error": f"Process failed: {exc}", "debug": debug_log},
-                code=500,
-            )
-            return
-
-        try:
-            folder_path, _, _ = load_folder_payload(folder_name)
-            write_run_meta(folder_path, api_prompt)
-            debug_log.append("meta.json (промпт API) записан")
-        except Exception as exc:
-            debug_log.append(f"Ошибка meta API: {exc}")
-
-        for idx, scenario in enumerate(scenarios, start=1):
-            chain = str(scenario.get("prompt", "") or "").strip()
-            sid = str(scenario.get("id", "") or "").strip()
-            if not chain:
-                debug_log.append(f"[{idx}] Пропуск «{scenario.get('title', '')}»: пустая цепочка анализатора")
-                continue
-            try:
-                main_prompt, linked_prompts = scenario_to_analyzer(chain)
-            except Exception as exc:
-                debug_log.append(f"[{idx}] Ошибка разбора цепочки: {exc}")
-                continue
-
-            scenario_key = sid if use_subdirs else None
-            debug_log.append(f"[{idx}/{len(scenarios)}] Анализ «{scenario.get('title', '')}»")
-            debug_log.append(f"  Цепочка: {chain}")
-            debug_log.append(f"  main={main_prompt}, linked={linked_prompts}")
-
-            analysis_ok = False
-            analysis_error = ""
-            try:
-                folder_path, _, _ = load_folder_payload(folder_name)
-                write_scenario_meta(
-                    folder_path,
-                    scenario,
-                    main_prompt,
-                    linked_prompts,
-                    scenario_subdir=use_subdirs,
-                )
-                task_set(
-                    folder_name,
-                    "analysis",
-                    status="running",
-                    percent=0,
-                    done=0,
-                    total=0,
-                    message=f"Анализ ({idx}/{len(scenarios)}): {scenario.get('title', '')}…",
-                )
-                run_analysis(
-                    folder_name,
-                    main_prompt,
-                    linked_prompts,
-                    load_folder_payload,
-                    scenario_id=scenario_key,
-                )
-                analysis_ok = True
-                debug_log.append("  Анализ завершён")
-                result_path = analyzer_result_path(folder_path, scenario_key)
-                if result_path.is_file():
-                    try:
-                        parsed = json.loads(result_path.read_text(encoding="utf-8"))
-                        if isinstance(parsed, dict):
-                            warn_rows = parsed.get("warnings")
-                            if isinstance(warn_rows, list):
-                                merged_warnings.extend([w for w in warn_rows if isinstance(w, dict)])
-                            merged_frames_checked = max(
-                                merged_frames_checked,
-                                int(parsed.get("frames_checked", 0) or 0),
-                            )
-                            merged_frames_with_main = max(
-                                merged_frames_with_main,
-                                int(parsed.get("frames_with_main", 0) or 0),
-                            )
-                            merged_pending_count += int(parsed.get("pending_count", 0) or 0)
-                            merged_cleared_count += int(parsed.get("cleared_count", 0) or 0)
-                            diag = parsed.get("diagnostics")
-                            if isinstance(diag, dict):
-                                pending_rows = diag.get("pending_by_main")
-                                if isinstance(pending_rows, list):
-                                    merged_pending_rows.extend([x for x in pending_rows if isinstance(x, dict)])
-                    except Exception as exc:
-                        debug_log.append(f"  Ошибка чтения результата сценария: {exc}")
-            except Exception as exc:
-                analysis_error = str(exc)
-                debug_log.append(f"  Ошибка анализа: {exc}")
-
-            viol_label = scenario_violation_label(scenario)
-            run_row: dict[str, object] = {
-                "folder": folder_name,
-                "scenario": scenario,
-                "scenario_id": sid,
-                "analyzer_main": main_prompt,
-                "analyzer_linked": linked_prompts,
-                "violation_label": viol_label,
-                "analysis_ok": analysis_ok,
-                "ok": True,
-            }
-            if analysis_error:
-                run_row["analysis_error"] = analysis_error
-            runs.append(run_row)
-
-        if not runs:
-            json_response(
-                self,
-                {"ok": False, "error": "Ни один сценарий не обработан", "debug": debug_log},
-                code=500,
-            )
-            return
-
-        last_run = runs[-1]
-        last_scenario = last_run.get("scenario") if isinstance(last_run.get("scenario"), dict) else {}
-        scenario_titles: list[str] = []
-        violation_labels: list[str] = []
-        for r in runs:
-            sc = r.get("scenario")
-            if isinstance(sc, dict):
-                title = str(sc.get("title", "") or "").strip()
-                if title and title not in scenario_titles:
-                    scenario_titles.append(title)
-            lbl = str(r.get("violation_label", "") or "").strip()
-            if lbl and lbl not in violation_labels:
-                violation_labels.append(lbl)
-        try:
-            folder_path, _, _ = load_folder_payload(folder_name)
-            analysis_dir = folder_path / "analysis"
-            analysis_dir.mkdir(parents=True, exist_ok=True)
-            mask_main = resolve_mask_main_prompt(folder_path, None, None)
-            unified = {
-                "schema": "samv_mask_analyzer_v1",
-                "folder": folder_name,
-                "main_prompt": "multi",
-                "mask_main_prompt": mask_main,
-                "linked_prompts": [],
-                "frames_checked": int(merged_frames_checked),
-                "frames_with_main": int(merged_frames_with_main),
-                "warnings_count": int(len(merged_warnings)),
-                "pending_count": int(merged_pending_count),
-                "cleared_count": int(merged_cleared_count),
-                "warnings": merged_warnings,
-                "diagnostics": {"pending_by_main": merged_pending_rows},
-                "violation_label": str(last_run.get("violation_label", "") or ""),
-                "violation_labels": violation_labels,
-                "scenario_title": str((last_scenario or {}).get("title", "") or ""),
-                "scenario_titles": scenario_titles,
-                "scenarios_total": int(len(scenarios)),
-                "scenarios_done": int(len(runs)),
-                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            }
-            (analysis_dir / "analyzer_result.json").write_text(
-                json.dumps(unified, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            debug_log.append("Единый analyzer_result.json собран")
-        except Exception as exc:
-            debug_log.append(f"Ошибка сборки единого результата: {exc}")
-        invalidate_folders_cache()
+        task_set(
+            folder_name,
+            "process",
+            status="running",
+            percent=0,
+            done=0,
+            total=0,
+            message="Подготовка…",
+        )
+        threading.Thread(
+            target=_process_video_thread_target,
+            kwargs={
+                "folder_name": folder_name,
+                "video_name": video_name,
+                "video_bytes": video_bytes,
+                "ext": ext,
+                "api_prompt": api_prompt,
+                "scale_div": float(scale_div),
+                "fps_div": int(fps_div),
+                "video_part_sec": float(video_part_sec),
+                "scenarios": scenarios,
+            },
+            daemon=True,
+        ).start()
         json_response(
             self,
             {
                 "ok": True,
-                "items": list_folders(),
-                "debug": debug_log,
-                "batch": use_subdirs,
-                "api_prompt": api_prompt,
-                "runs": runs,
-                "scenarios_total": len(scenarios),
-                "scenarios_done": len(runs),
-                "scenario": last_scenario,
-                "analyzer_main": "multi",
-                "analyzer_linked": [],
-                "violation_label": last_run.get("violation_label", ""),
-                "analysis_started": any(bool(r.get("analysis_ok")) for r in runs),
+                "started": True,
                 "folder": folder_name,
-                **last_out,
+                "task": "process",
             },
         )
 
@@ -1062,7 +1163,7 @@ class SamvHandler(http.server.SimpleHTTPRequestHandler):
         qs = parse_qs(parsed.query or "")
         folder = safe_name((qs.get("folder") or [""])[0])
         task = str((qs.get("task") or ["analysis"])[0] or "analysis").strip().lower()
-        if task not in ("analysis", "video"):
+        if task not in ("analysis", "video", "process"):
             task = "analysis"
         if not folder:
             json_response(self, {"ok": False, "error": "Need folder"}, code=400)

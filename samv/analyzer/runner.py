@@ -13,6 +13,7 @@ from samv.masks.logic import scan_frame_job
 from samv.analyzer.workers import render_warning_jpeg_job
 from samv.parallel import map_parallel, worker_count
 from samv.tasks import task_progress, task_set
+from samv.video.io import cache_json_frames_as_jpeg, find_video_for_masks, resolve_mask_dimensions
 
 
 @dataclass
@@ -50,8 +51,8 @@ def run_analysis(
         folder_path, payload, video_path = load_folder_payload(folder)
         if video_path is None or not video_path.is_file():
             raise RuntimeError("video.* not found in folder")
-        h = int(payload.get("height", 0) or 0)
-        w = int(payload.get("width", 0) or 0)
+        extract_path = find_video_for_masks(folder_path, payload) or video_path
+        h, w = resolve_mask_dimensions(payload, extract_path)
         if h <= 0 or w <= 0:
             raise RuntimeError("Invalid width/height in data.json")
         frames = payload.get("frames")
@@ -85,8 +86,8 @@ def run_analysis(
         render_jobs: list[tuple] = []
         render_meta: dict[tuple[str, int], dict[str, float | str]] = {}
         data_json_path = str(folder_path / "data.json")
-        video_path_str = str(video_path)
         warn_dir_str = str(warn_dir)
+        src_cache_dir = warn_dir / "src_cache"
         frames_checked = len(frame_rows)
         frames_main_present = 0
         min_track_frames = max(1, int(cfg.AN_MIN_INFORMATIVE_FRAMES))
@@ -300,6 +301,7 @@ def run_analysis(
         meta_early = read_scenario_meta(folder_path, scenario_id)
         viol_label_early = str((meta_early or {}).get("violation_label", "") or "").strip()
 
+        pending_render: list[tuple[int, int, list[str], str]] = []
         seen_confirmed: set[tuple[str, int]] = set()
         for row in sorted(confirm_rows, key=lambda x: (int(x["frame"]), int(x["main_id"]))):
             fidx = int(row["frame"])
@@ -317,9 +319,26 @@ def run_analysis(
                 "equipment_absence_confidence": float(row.get("equipment_absence_confidence", 0.0) or 0.0),
                 "temporal_confidence": float(row.get("temporal_confidence", 0.0) or 0.0),
             }
+            pending_render.append((fidx, int(mid), reasons, sid))
+
+        src_by_json: dict[int, str] = {}
+        if pending_render:
+            src_by_json = cache_json_frames_as_jpeg(
+                extract_path,
+                [x[0] for x in pending_render],
+                payload,
+                src_cache_dir,
+                mask_h=h,
+                mask_w=w,
+            )
+
+        for fidx, mid, reasons, sid in pending_render:
+            src_jpg = src_by_json.get(int(fidx), "")
+            if not src_jpg:
+                continue
             render_jobs.append(
                 (
-                    video_path_str,
+                    src_jpg,
                     data_json_path,
                     folder,
                     fidx,

@@ -39,18 +39,27 @@ def task_set(folder: str, task: str, **fields: object) -> None:
         row["updated_at"] = time.time()
 
 
-def task_progress(folder: str, task: str, done: int, total: int, message: str) -> None:
+def task_progress(
+    folder: str,
+    task: str,
+    done: int,
+    total: int,
+    message: str,
+    *,
+    eta_seconds: float | None = None,
+) -> None:
 
     """Процент и текст для прогресс-бара."""
     total_n = max(1, int(total))
     done_n = max(0, min(int(done), total_n))
     pct = int(round(100.0 * float(done_n) / float(total_n)))
-    task_set(
-        folder,
-        task,
-        status="running",
-        percent=pct,
-        done=done_n,
-        total=total_n,
-        message=str(message or "").strip(),
-    )
+    fields: dict[str, object] = {
+        "status": "running",
+        "percent": pct,
+        "done": done_n,
+        "total": total_n,
+        "message": str(message or "").strip(),
+    }
+    if eta_seconds is not None and float(eta_seconds) > 0:
+        fields["eta_seconds"] = float(eta_seconds)
+    task_set(folder, task, **fields)
